@@ -43,13 +43,25 @@
     button:disabled { background: #333; color: #777; cursor: not-allowed; }
     button.active { background: #1e88e5; }
     button.danger { background: #d32f2f; }
-    canvas {
+
+    /* 新增：包裹 canvas 的可滚动容器 */
+    .canvas-container {
       width: 100%;
-      height: 250px;
-      background: #000;
+      overflow-x: auto;
+      overflow-y: hidden;
       border-radius: 8px;
-      display: block;
+      margin-top: 10px;
     }
+    canvas {
+      height: 280px;
+      background: #000;
+      display: block;
+      cursor: pointer;
+      /* 逻辑宽度拉长以支持全频段细节 */
+      width: 3000px;
+      min-width: 3000px;
+    }
+
     .slider-container {
       display: flex;
       align-items: center;
@@ -71,22 +83,10 @@
       justify-content: center;
       margin: 15px 0;
     }
-    .filter-controls {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      justify-content: center;
-      margin: 10px 0;
-    }
-    .filter-control {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
   </style>
 </head>
 <body>
-  <h2>🎤 实时音频滤波与增强（流式M4A录音）</h2>
+  <h2>🎤 录音机</h2>
 
   <div class="device-selectors">
     <select id="inputSelect" disabled>
@@ -115,20 +115,10 @@
     </div>
   </div>
 
-  <div class="filter-controls">
-    <div class="filter-control">
-      <label>降噪强度:</label>
-      <input type="range" id="noiseReductionSlider" min="0" max="100" value="70" />
-      <span id="noiseReductionValue">0.7</span>
-    </div>
-    <div class="filter-control">
-      <label>滤波Q值:</label>
-      <input type="range" id="qValueSlider" min="1" max="100" value="35" />
-      <span id="qValueDisplay">35</span>
-    </div>
+  <!-- 新增容器 -->
+  <div class="canvas-container">
+    <canvas id="fftCanvas"></canvas>
   </div>
-
-  <canvas id="fftCanvas"></canvas>
   <div id="log"></div>
 
   <script>
@@ -139,27 +129,24 @@
     let analyser = null;
     let gainNode = null;
     let filters = [];
-    let noiseReductionNode = null;
+    let noiseSuppressionNode = null;
     let isFiltering = false;
     let isRecording = false;
     let mediaRecorder = null;
-    let recordedChunks = []; // 仅用于降级模式
+    let recordedChunks = [];
     let currentInputDeviceId = localStorage.getItem('audioInputDeviceId') || 'default';
     let currentOutputDeviceId = localStorage.getItem('audioOutputDeviceId') || 'default';
 
-    // 流式写入相关
     let fileHandle = null;
     let writableStream = null;
     let writer = null;
 
-    // === 录音保护配置 ===
     let recordingStartTime = null;
     let memoryGuardTimer = null;
 
-    // 滤波器频率列表，参考Python代码
     const notchFreqs = [50, 95, 100, 150, 200, 250, 285, 350, 450, 550, 650, 850, 950];
-    let currentQ = 35;
-    let noiseReductionLevel = 0.7;
+    const Q = 35;
+    const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
 
     // ================= DOM =================
     const startBtn = document.getElementById('startBtn');
@@ -168,10 +155,6 @@
     const recordBtn = document.getElementById('recordBtn');
     const gainSlider = document.getElementById('gainSlider');
     const gainValue = document.getElementById('gainValue');
-    const noiseReductionSlider = document.getElementById('noiseReductionSlider');
-    const noiseReductionValue = document.getElementById('noiseReductionValue');
-    const qValueSlider = document.getElementById('qValueSlider');
-    const qValueDisplay = document.getElementById('qValueDisplay');
     const canvas = document.getElementById('fftCanvas');
     const ctx = canvas.getContext('2d');
     const logEl = document.getElementById('log');
@@ -183,11 +166,20 @@
       logEl.textContent = msg;
     }
 
+    // === 边距调整：底部留足空间给标签 ===
+    const MARGIN_LEFT = 60;
+    const MARGIN_BOTTOM = 50; // 增大底部边距
+    const MARGIN_RIGHT = 20;
+    const MARGIN_TOP = 10;
+
+    // 逻辑绘图宽度（固定，用于全频段展开）
+    const LOGICAL_CANVAS_WIDTH = 3000; // 与 CSS 中 canvas width 一致
+    const CANVAS_HEIGHT = 280;
+
     function resizeCanvas() {
       const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
+      canvas.width = LOGICAL_CANVAS_WIDTH * dpr;
+      canvas.height = CANVAS_HEIGHT * dpr;
       ctx.scale(dpr, dpr);
     }
     window.addEventListener('resize', resizeCanvas);
@@ -231,16 +223,15 @@
       }
     }
 
-    // ================= 构建音频图 =================
+    // 创建带噪声抑制的音频图
     function buildAudioGraph(enableFilter) {
-      // 断开并清理现有滤波器
+      // 断开并清空现有滤波器
       filters.forEach(f => f.disconnect());
-      filters = [];
-      
-      if (noiseReductionNode) {
-        noiseReductionNode.disconnect();
-        noiseReductionNode = null;
+      if (noiseSuppressionNode) {
+        noiseSuppressionNode.disconnect();
+        noiseSuppressionNode = null;
       }
+      filters = [];
 
       analyser = audioContext.createAnalyser();
       analyser.fftSize = 1024;
@@ -248,69 +239,90 @@
       let currentNode = sourceNode;
 
       if (enableFilter) {
-        // 创建噪声抑制节点（模拟Python中的noise reduction）
-        noiseReductionNode = createNoiseReductionNode(audioContext, noiseReductionLevel);
-        currentNode.connect(noiseReductionNode);
-        currentNode = noiseReductionNode;
-
-        // 串联多个陷波滤波器，参考Python代码
+        // 多级陷波滤波器 - 针对特定频率的电流声
         for (const freq of notchFreqs) {
           const nf = audioContext.createBiquadFilter();
           nf.type = 'notch';
           nf.frequency.value = freq;
-          nf.Q.value = currentQ;
+          nf.Q.value = Q;
           currentNode.connect(nf);
           currentNode = nf;
           filters.push(nf);
         }
 
-        // 高通滤波器，参考Python代码
+        // 高通滤波器 - 去除低频噪声
         const hp = audioContext.createBiquadFilter();
         hp.type = 'highpass';
         hp.frequency.value = 40;
-        hp.Q.value = 1.0;
+        hp.Q.value = 0.707;
         currentNode.connect(hp);
         currentNode = hp;
         filters.push(hp);
 
-        // 峰值滤波器（人声增强），参考Python代码中的增益调整
-        const peakingFilter = audioContext.createBiquadFilter();
-        peakingFilter.type = 'peaking';
-        peakingFilter.frequency.value = 1850;
-        peakingFilter.gain.value = parseFloat(gainSlider.value) / 100;
-        peakingFilter.Q.value = 0.8;
-        currentNode.connect(peakingFilter);
-        currentNode = peakingFilter;
-        filters.push(peakingFilter);
+        // 峰值滤波器 - 增强人声频段
+        const peaking = audioContext.createBiquadFilter();
+        peaking.type = 'peaking';
+        peaking.frequency.value = 1850;
+        peaking.gain.value = parseFloat(gainSlider.value) / 100;
+        peaking.Q.value = 0.8;
+        currentNode.connect(peaking);
+        currentNode = peaking;
+        filters.push(peaking);
+
+        // 额外的高通滤波器 - 进一步去除低频噪声
+        const hp2 = audioContext.createBiquadFilter();
+        hp2.type = 'highpass';
+        hp2.frequency.value = 80;
+        hp2.Q.value = 0.707;
+        currentNode.connect(hp2);
+        currentNode = hp2;
+        filters.push(hp2);
       }
 
       currentNode.connect(analyser);
       analyser.connect(audioContext.destination);
     }
 
-    // 创建模拟噪声抑制的Web Audio节点
-    function createNoiseReductionNode(context, level) {
-      // 使用WaveShaperNode模拟噪声抑制效果
-      const waveShaper = context.createWaveShaper();
-      const curve = new Float32Array(65536);
-      const deg = Math.PI / 180;
-      const reductionAmount = level;
+    // 为录音创建更复杂的滤波链
+    function createRecordingFilterChain() {
+      let currentNode = sourceNode;
 
-      // 创建一个平滑函数来减少噪声
-      for (let i = 0; i < 65536; i++) {
-        let x = (i - 32768) / 32768;
-        // 使用更平滑的曲线减少噪声
-        if (x < -reductionAmount) {
-          curve[i] = -reductionAmount + (x + reductionAmount) * 0.1;
-        } else if (x > reductionAmount) {
-          curve[i] = reductionAmount + (x - reductionAmount) * 0.1;
-        } else {
-          curve[i] = x * (1 - reductionAmount * 0.5);
-        }
+      // 多级陷波滤波器 - 针对特定频率的电流声
+      for (const freq of notchFreqs) {
+        const nf = audioContext.createBiquadFilter();
+        nf.type = 'notch';
+        nf.frequency.value = freq;
+        nf.Q.value = Q;
+        currentNode.connect(nf);
+        currentNode = nf;
       }
-      waveShaper.curve = curve;
-      waveShaper.oversample = '4x';
-      return waveShaper;
+
+      // 高通滤波器 - 去除低频噪声
+      const hp = audioContext.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 40;
+      hp.Q.value = 0.707;
+      currentNode.connect(hp);
+      currentNode = hp;
+
+      // 峰值滤波器 - 增强人声频段
+      const peaking = audioContext.createBiquadFilter();
+      peaking.type = 'peaking';
+      peaking.frequency.value = 1850;
+      peaking.gain.value = parseFloat(gainSlider.value) / 100;
+      peaking.Q.value = 0.8;
+      currentNode.connect(peaking);
+      currentNode = peaking;
+
+      // 额外的高通滤波器 - 进一步去除低频噪声
+      const hp2 = audioContext.createBiquadFilter();
+      hp2.type = 'highpass';
+      hp2.frequency.value = 80;
+      hp2.Q.value = 0.707;
+      currentNode.connect(hp2);
+      currentNode = hp2;
+
+      return currentNode;
     }
 
     function estimateRecordedSize() {
@@ -318,7 +330,6 @@
       return recordedChunks.reduce((total, chunk) => total + chunk.size, 0);
     }
 
-    // ✅ 核心：超时后调用 stopRecording(true)，行为一致
     function checkMemoryPressure() {
       if (!isRecording || !recordingStartTime) return;
 
@@ -350,19 +361,17 @@
       }
     }
 
-    // ✅ 新增：生成标准文件名
     function generateFilename() {
       const now = new Date();
       const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
       return `recording_${timestamp}.m4a`;
     }
 
-    // ================= 停止所有音频资源 =================
     async function stopAllAudio() {
       clearGuardTimer();
 
       if (isRecording) {
-        await stopRecording(false); // 不保存
+        await stopRecording(false);
       }
 
       if (stream) {
@@ -378,7 +387,7 @@
       sourceNode = null;
       analyser = null;
       filters = [];
-      noiseReductionNode = null;
+      noiseSuppressionNode = null;
       isFiltering = false;
 
       startBtn.disabled = false;
@@ -394,7 +403,6 @@
       log("音频已关闭");
     }
 
-    // ================= 停止录音（通用）=================
     async function stopRecording(save = true) {
       if (!isRecording) return;
 
@@ -409,7 +417,6 @@
       let filename = generateFilename();
       let mimeType = 'audio/mp4';
 
-      // 确定 MIME 类型
       if (!MediaRecorder.isTypeSupported('audio/mp4')) {
         if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
           mimeType = 'audio/webm;codecs=opus';
@@ -420,7 +427,6 @@
         }
       }
 
-      // 处理流式写入
       if (writer) {
         try {
           await writer.close();
@@ -436,7 +442,6 @@
         fileHandle = null;
       }
 
-      // 处理内存模式
       if (save && recordedChunks.length > 0 && !fileHandle) {
         const blob = new Blob(recordedChunks, { type: mimeType });
         const url = URL.createObjectURL(blob);
@@ -456,7 +461,6 @@
       recordBtn.classList.remove('active');
     }
 
-    // ================= 启动音频 =================
     startBtn.onclick = async () => {
       try {
         log("正在启动音频...");
@@ -524,23 +528,6 @@
       }
     };
 
-    noiseReductionSlider.oninput = () => {
-      noiseReductionLevel = noiseReductionSlider.value / 100;
-      noiseReductionValue.textContent = noiseReductionLevel.toFixed(2);
-      if (isFiltering && audioContext) {
-        buildAudioGraph(true);
-      }
-    };
-
-    qValueSlider.oninput = () => {
-      currentQ = parseInt(qValueSlider.value);
-      qValueDisplay.textContent = currentQ;
-      if (isFiltering && audioContext) {
-        buildAudioGraph(true);
-      }
-    };
-
-    // ================= 开始录音 =================
     recordBtn.onclick = async () => {
       if (isRecording) {
         await stopRecording(true);
@@ -584,44 +571,11 @@
           recordedChunks = [];
         }
 
-        // 创建用于录音的音频图
         const dest = audioContext.createMediaStreamDestination();
-        let recNode = sourceNode;
-
-        if (isFiltering) {
-          // 添加噪声抑制
-          const noiseReductionForRecording = createNoiseReductionNode(audioContext, noiseReductionLevel);
-          recNode.connect(noiseReductionForRecording);
-          recNode = noiseReductionForRecording;
-
-          // 串联多个陷波滤波器
-          for (const freq of notchFreqs) {
-            const nf = audioContext.createBiquadFilter();
-            nf.type = 'notch';
-            nf.frequency.value = freq;
-            nf.Q.value = currentQ;
-            recNode.connect(nf);
-            recNode = nf;
-          }
-          
-          // 高通滤波器
-          const hp = audioContext.createBiquadFilter();
-          hp.type = 'highpass';
-          hp.frequency.value = 40;
-          hp.Q.value = 1.0;
-          recNode.connect(hp);
-          recNode = hp;
-
-          // 峰值滤波器（人声增强）
-          const peakingFilter = audioContext.createBiquadFilter();
-          peakingFilter.type = 'peaking';
-          peakingFilter.frequency.value = 1850;
-          peakingFilter.gain.value = parseFloat(gainSlider.value) / 100;
-          peakingFilter.Q.value = 0.8;
-          recNode.connect(peakingFilter);
-          recNode = peakingFilter;
-        }
-        recNode.connect(dest);
+        
+        // 应用滤波链到录音流
+        let filteredNode = createRecordingFilterChain();
+        filteredNode.connect(dest);
 
         if (useStreamWrite) {
           if (MediaRecorder.isTypeSupported('audio/mp4')) {
@@ -682,24 +636,120 @@
       }
     };
 
+    // ======== 点击获取频率 ========
+    function handleCanvasClick(clientX, clientY) {
+      if (!analyser || !audioContext) return;
+
+      const containerRect = document.querySelector('.canvas-container').getBoundingClientRect();
+      const canvasRect = canvas.getBoundingClientRect();
+      const scrollLeft = document.querySelector('.canvas-container').scrollLeft;
+
+      // 计算相对于 canvas 逻辑坐标的 x
+      const x = clientX - canvasRect.left + scrollLeft;
+      const plotWidth = LOGICAL_CANVAS_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
+
+      if (x < MARGIN_LEFT || x > LOGICAL_CANVAS_WIDTH - MARGIN_RIGHT) return;
+
+      const normalizedX = (x - MARGIN_LEFT) / plotWidth;
+      const nyquist = audioContext.sampleRate / 2;
+      const freq = normalizedX * nyquist;
+
+      log(`🖱️ 当前频率: ${freq.toFixed(1)} Hz`);
+    }
+
+    canvas.addEventListener('click', (e) => handleCanvasClick(e.clientX, e.clientY));
+    canvas.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0 && e.changedTouches.length > 0) {
+        const touch = e.changedTouches[0];
+        handleCanvasClick(touch.clientX, touch.clientY);
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    // ======== 优化后的 drawFFT ========
     function drawFFT() {
       if (!analyser) return;
-      const bufferLength = analyser.frequencyBinCount;
+      const bufferLength = analyser.frequencyBinCount; // 512
       const dataArray = new Uint8Array(bufferLength);
+
+      const width = LOGICAL_CANVAS_WIDTH;
+      const height = CANVAS_HEIGHT;
+
+      ctx.clearRect(0, 0, width, height);
+
+      const plotWidth = width - MARGIN_LEFT - MARGIN_RIGHT;
+      const plotHeight = height - MARGIN_TOP - MARGIN_BOTTOM;
+
       analyser.getByteFrequencyData(dataArray);
 
-      ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-      const barWidth = (width / bufferLength) * 2.5;
-
+      // 绘制频谱柱状图
+      const barWidth = plotWidth / bufferLength;
       for (let i = 0; i < bufferLength; i++) {
-        const barHeight = (dataArray[i] / 255) * height;
-        // 根据频率调整颜色
-        const hue = (i / bufferLength) * 360;
-        ctx.fillStyle = `hsl(${hue}, 100%, 60%)`;
-        ctx.fillRect(i * barWidth, height - barHeight, barWidth - 1, barHeight);
+        const barHeight = (dataArray[i] / 255) * plotHeight;
+        ctx.fillStyle = 'cyan';
+        const x = MARGIN_LEFT + i * barWidth;
+        const y = MARGIN_TOP + (plotHeight - barHeight);
+        ctx.fillRect(x, y, barWidth - 1, barHeight);
       }
+
+      // ====== X 轴标签（底部）======
+      ctx.fillStyle = '#aaa';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+
+      const sampleRate = audioContext ? audioContext.sampleRate : 44100;
+      const nyquist = sampleRate / 2;
+
+      // 使用线性分布的合理刻度（覆盖 0～20k+）
+      const xLabels = [];
+      for (let f = 0; f <= 22000; f += 2000) {
+        xLabels.push({ freq: f, ratio: f / nyquist });
+      }
+      // 确保包含 Nyquist
+      if (nyquist > 22000) {
+        xLabels.push({ freq: Math.round(nyquist), ratio: 1 });
+      }
+
+      xLabels.forEach(label => {
+        const x = MARGIN_LEFT + label.ratio * plotWidth;
+        if (x >= MARGIN_LEFT && x <= width - MARGIN_RIGHT) {
+          ctx.fillText(`${Math.round(label.freq / 1000)}k`, x, height - MARGIN_BOTTOM + 10);
+          ctx.beginPath();
+          ctx.moveTo(x, height - MARGIN_BOTTOM);
+          ctx.lineTo(x, height - MARGIN_BOTTOM + 5);
+          ctx.strokeStyle = '#555';
+          ctx.stroke();
+        }
+      });
+      ctx.fillText('频率 (Hz)', width / 2, height - 10);
+
+      // ====== Y 轴标签（左侧）======
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      const yLabels = [
+        { value: 255, ratio: 0 },
+        { value: 192, ratio: 0.25 },
+        { value: 128, ratio: 0.5 },
+        { value: 64,  ratio: 0.75 },
+        { value: 0,   ratio: 1 }
+      ];
+      yLabels.forEach(label => {
+        const y = MARGIN_TOP + label.ratio * plotHeight;
+        ctx.fillText(label.value.toString(), MARGIN_LEFT - 10, y);
+        ctx.beginPath();
+        ctx.moveTo(MARGIN_LEFT - 5, y);
+        ctx.lineTo(MARGIN_LEFT + 5, y);
+        ctx.strokeStyle = '#555';
+        ctx.stroke();
+      });
+
+      ctx.save();
+      ctx.translate(15, height / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = 'center';
+      ctx.fillText('幅度', 0, 0);
+      ctx.restore();
 
       requestAnimationFrame(drawFFT);
     }
