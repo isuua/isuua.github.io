@@ -278,7 +278,7 @@
 <body>
     <div class="container">
         <h1>🎤 智能降噪录音机（谱减法）</h1>
-        <p class="subtitle">实时谱减法降噪 | 设备选择 | 波形可视化 | 流模式录音</p>
+        <p class="subtitle">实时谱减法降噪 | 设备选择 | 波形可视化 | 流模式录音 (M4A格式)</p>
 
         <!-- 设备选择区 -->
         <div class="card">
@@ -325,7 +325,7 @@
                 <div class="timer" id="recording-timer">00:00:00</div>
             </div>
             
-            <div id="log">就绪</div>
+            <div id="log">就绪 (输出格式: M4A)</div>
 
             <!-- 控制按钮 -->
             <div class="controls">
@@ -461,10 +461,33 @@
             }
         }
 
+        // 生成M4A格式文件名
         function generateFilename() {
             const now = new Date();
             const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-            return `recording_${timestamp}.webm`;
+            return `recording_${timestamp}.m4a`; // 修改后缀为m4a
+        }
+
+        // 获取兼容的M4A编码格式
+        function getSupportedM4aFormat() {
+            // 按优先级检查浏览器支持的M4A格式
+            const formats = [
+                'audio/mp4;codecs=mp4a.40.2', // AAC-LC (标准M4A)
+                'audio/mp4;codecs=aac',       // 通用AAC
+                'audio/aac;codecs=aac',       // 降级AAC
+                'audio/webm;codecs=opus'      // 最后降级到webm
+            ];
+            
+            for (const format of formats) {
+                if (MediaRecorder.isTypeSupported(format)) {
+                    log(`✅ 使用音频格式: ${format}`);
+                    return format;
+                }
+            }
+            
+            // 默认返回webm作为兜底
+            log(`⚠️ 浏览器不支持M4A格式，降级为webm`);
+            return 'audio/webm;codecs=opus';
         }
 
         // ================= 谱减法核心函数（完全复用参考代码）=================
@@ -865,7 +888,7 @@
             });
         }
 
-        // ================= 录音控制 =================
+        // ================= 录音控制（修改为M4A格式）=================
         async function stopRecording(save = true) {
             // 双重校验，防止重复调用
             if (!isRecording || !mediaRecorder) {
@@ -889,11 +912,13 @@
                     mediaRecorder.stop();
                 }
 
-                // 保存录音文件
+                // 保存录音文件（M4A格式）
                 if (save && recordedChunks.length > 0) {
                     const filename = generateFilename();
+                    // 根据实际使用的格式设置Blob类型
+                    const mimeType = mediaRecorder.mimeType || 'audio/mp4';
                     const blob = new Blob(recordedChunks, { 
-                        type: 'audio/webm;codecs=opus' 
+                        type: mimeType 
                     });
                     
                     const url = URL.createObjectURL(blob);
@@ -905,7 +930,7 @@
                     document.body.removeChild(a);
                     URL.revokeObjectURL(url);
                     
-                    log(`✅ 录音已保存: ${filename}`);
+                    log(`✅ 录音已保存 (M4A格式): ${filename}`);
                 }
 
                 // 重置录音相关变量
@@ -952,14 +977,13 @@
                     analyser.connect(dest);
                 }
 
-                // 初始化MediaRecorder
-                const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-                    ? 'audio/webm;codecs=opus' 
-                    : 'audio/webm';
+                // 获取兼容的M4A格式
+                const mimeType = getSupportedM4aFormat();
                 
+                // 初始化MediaRecorder (M4A格式)
                 mediaRecorder = new MediaRecorder(dest.stream, { 
-                    mimeType,
-                    audioBitsPerSecond: 128000 
+                    mimeType: mimeType,
+                    audioBitsPerSecond: 128000 // AAC标准码率
                 });
 
                 // 处理录音数据
@@ -994,8 +1018,8 @@
                 // 更新UI
                 recordBtn.textContent = "停止录音";
                 recordBtn.classList.add('active');
-                recorderStatus.innerHTML = '状态: <span class="status-recording">正在录音</span>';
-                log("🎙️ 录音已开始（谱减法降噪模式）");
+                recorderStatus.innerHTML = '状态: <span class="status-recording">正在录音 (M4A)</span>';
+                log("🎙️ 录音已开始（谱减法降噪模式，输出M4A格式）");
 
             } catch (err) {
                 log(`❌ 录音启动失败: ${err.message}`);
@@ -1012,7 +1036,7 @@
         // ================= 音频控制 =================
         async function startAudio() {
             try {
-                log("正在启动音频...");
+                log("正在启动音频... (输出格式: M4A)");
 
                 // 创建音频上下文
                 if (!audioContext) {
@@ -1066,8 +1090,8 @@
                 recordBtn.disabled = false;
                 inputSelect.disabled = true;
                 outputSelect.disabled = true;
-                recorderStatus.innerHTML = '状态: <span class="status-active">已启动</span>';
-                log("✅ 音频已启动！");
+                recorderStatus.innerHTML = '状态: <span class="status-active">已启动 (M4A)</span>';
+                log("✅ 音频已启动！输出格式: M4A");
 
             } catch (err) {
                 log(`❌ 麦克风错误: ${err.message}`);
