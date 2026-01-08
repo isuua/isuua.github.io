@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎤 智能降噪录音机（谱减法）</title>
+    <title>🎤 智能降噪录音机（谱减法）- 优化版</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -75,7 +75,7 @@
             margin: 15px 0;
         }
 
-        select, input[type="number"], button {
+        select, input[type="number"], button, input[type="file"] {
             padding: 10px 12px;
             border: none;
             border-radius: 6px;
@@ -86,7 +86,7 @@
             min-width: 180px;
         }
 
-        select:focus, input[type="number"]:focus {
+        select:focus, input[type="number"]:focus, input[type="file"]:focus {
             outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
@@ -261,6 +261,25 @@
             min-width: 200px;
         }
 
+        /* 新增噪声文件上传样式 */
+        .noise-file-upload {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0;
+            justify-content: center;
+        }
+
+        input[type="file"] {
+            min-width: 220px;
+        }
+
+        .advanced-settings {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid var(--border);
+        }
+
         @media (max-width: 768px) {
             .controls {
                 flex-direction: column;
@@ -277,8 +296,8 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎤 智能降噪录音机（谱减法）</h1>
-        <p class="subtitle">实时谱减法降噪 | 设备选择 | 波形可视化 | 流模式录音 (M4A格式)</p>
+        <h1>🎤 智能降噪录音机（谱减法）- 优化版</h1>
+        <p class="subtitle">实时谱减法降噪 | 自定义噪声样本 | 波形可视化 | 流模式录音 (M4A格式)</p>
 
         <!-- 设备选择区 -->
         <div class="card">
@@ -291,12 +310,18 @@
                 </select>
             </div>
 
+            <!-- 噪声文件上传 -->
+            <div class="noise-file-upload">
+                <input type="file" id="noiseFileInput" accept="audio/*" title="选择噪声音频文件">
+                <button id="loadNoiseBtn" class="btn btn-warning" disabled>加载噪声样本</button>
+            </div>
+
             <!-- 设置区 -->
             <div class="settings">
                 <div class="slider-container">
                     <label>降噪强度:</label>
-                    <input type="range" id="noise-reduction-strength" min="0" max="100" value="50" />
-                    <span id="strength-value">50%</span>
+                    <input type="range" id="noise-reduction-strength" min="0" max="100" value="70" />
+                    <span id="strength-value">70%</span>
                 </div>
                 <div class="sample-duration-container">
                     <label>底噪采样时长:</label>
@@ -311,6 +336,25 @@
                 <div class="slider-container">
                     <label>最大时长(秒):</label>
                     <input type="number" id="maxDurationInput" min="0" max="7200" value="0" />
+                </div>
+            </div>
+
+            <!-- 高级设置 -->
+            <div class="settings advanced-settings">
+                <div class="slider-container">
+                    <label>噪声阈值:</label>
+                    <input type="range" id="noise-threshold" min="0" max="100" value="10" />
+                    <span id="threshold-value">10%</span>
+                </div>
+                <div class="slider-container">
+                    <label>频谱平滑:</label>
+                    <input type="range" id="spectrum-smoothing" min="0" max="50" value="20" />
+                    <span id="smoothing-value">20%</span>
+                </div>
+                <div class="slider-container">
+                    <label>过减因子:</label>
+                    <input type="range" id="over-subtraction" min="0" max="100" value="15" />
+                    <span id="over-sub-value">15%</span>
                 </div>
             </div>
 
@@ -333,6 +377,7 @@
                 <button id="stopBtn" class="btn btn-danger" disabled>关闭音频</button>
                 <button id="filterBtn" class="btn btn-warning" disabled>启用降噪</button>
                 <button id="recordBtn" class="btn btn-success" disabled>开始录音</button>
+                <button id="calibrateBtn" class="btn btn-primary" disabled>校准噪声</button>
             </div>
         </div>
 
@@ -365,15 +410,21 @@
         let recordingTimerInterval = null;
         let audioOutputElement = null;
         
-        // 谱减法降噪相关（完全复用参考代码）
+        // 谱减法降噪相关（优化版）
         let noiseSampleBuffer = null; // 底噪样本缓存
         let noiseSpectrum = null;     // 预计算的噪声频谱
         let denoiseProcessor = null;  // 实时降噪处理器
+        let uploadedNoiseBuffer = null; // 上传的噪声文件缓存
         
-        // 降噪参数（和参考代码一致）
+        // 降噪参数（优化版，增加更多可调参数）
         const FFT_SIZE = 1024;
         const HOP_SIZE = FFT_SIZE / 2;
         const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
+        
+        // 新增可调参数
+        let noiseThreshold = 0.1;      // 噪声阈值（避免过度降噪）
+        let spectrumSmoothing = 0.2;   // 频谱平滑系数
+        let overSubtractionFactor = 0.15; // 过减因子
 
         // DOM 元素
         const startBtn = document.getElementById('startBtn');
@@ -391,12 +442,23 @@
         const recorderStatus = document.getElementById('recorder-status');
         const noiseBadge = document.getElementById('noise-badge');
         const recordingTimer = document.getElementById('recording-timer');
+        const noiseFileInput = document.getElementById('noiseFileInput');
+        const loadNoiseBtn = document.getElementById('loadNoiseBtn');
+        const calibrateBtn = document.getElementById('calibrateBtn');
+        
+        // 新增高级参数控件
+        const noiseThresholdSlider = document.getElementById('noise-threshold');
+        const thresholdValue = document.getElementById('threshold-value');
+        const spectrumSmoothingSlider = document.getElementById('spectrum-smoothing');
+        const smoothingValue = document.getElementById('smoothing-value');
+        const overSubtractionSlider = document.getElementById('over-subtraction');
+        const overSubValue = document.getElementById('over-sub-value');
         
         let canvasContext;
         let canvasWidth;
         let canvasHeight;
 
-        // ================= 工具函数（复用参考代码）=================
+        // ================= 工具函数（优化版）=================
         function log(msg) {
             console.log(msg);
             logEl.textContent = msg;
@@ -465,17 +527,16 @@
         function generateFilename() {
             const now = new Date();
             const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-            return `recording_${timestamp}.m4a`; // 修改后缀为m4a
+            return `recording_${timestamp}.m4a`;
         }
 
         // 获取兼容的M4A编码格式
         function getSupportedM4aFormat() {
-            // 按优先级检查浏览器支持的M4A格式
             const formats = [
-                'audio/mp4;codecs=mp4a.40.2', // AAC-LC (标准M4A)
-                'audio/mp4;codecs=aac',       // 通用AAC
-                'audio/aac;codecs=aac',       // 降级AAC
-                'audio/webm;codecs=opus'      // 最后降级到webm
+                'audio/mp4;codecs=mp4a.40.2',
+                'audio/mp4;codecs=aac',
+                'audio/aac;codecs=aac',
+                'audio/webm;codecs=opus'
             ];
             
             for (const format of formats) {
@@ -485,12 +546,11 @@
                 }
             }
             
-            // 默认返回webm作为兜底
             log(`⚠️ 浏览器不支持M4A格式，降级为webm`);
             return 'audio/webm;codecs=opus';
         }
 
-        // ================= 谱减法核心函数（完全复用参考代码）=================
+        // ================= 谱减法核心函数（优化版）=================
         // 汉宁窗函数
         function hanningWindow(size) {
             const window = new Float32Array(size);
@@ -500,7 +560,7 @@
             return window;
         }
 
-        // FFT类（完全复用）
+        // FFT类（优化版，增加频谱平滑）
         class FFT {
             constructor(size, sampleRate) {
                 this.size = size;
@@ -508,6 +568,7 @@
                 this.real = new Float32Array(size);
                 this.imag = new Float32Array(size);
                 this.spectrum = new Float32Array(size);
+                this.prevSpectrum = new Float32Array(size/2).fill(0); // 上一帧频谱缓存
                 
                 // 预计算旋转因子
                 this.twiddle = new Array(size / 2);
@@ -584,11 +645,100 @@
                     imag[i] = -imag[i] / n;
                 }
             }
+            
+            // 新增：频谱平滑
+            smoothSpectrum(spectrum, smoothingFactor) {
+                const smoothed = new Float32Array(spectrum.length);
+                for (let i = 0; i < spectrum.length; i++) {
+                    smoothed[i] = (1 - smoothingFactor) * spectrum[i] + smoothingFactor * this.prevSpectrum[i];
+                    this.prevSpectrum[i] = smoothed[i];
+                }
+                return smoothed;
+            }
         }
 
-        // 采集底噪样本（适配实时场景）
+        // 加载上传的噪声文件
+        async function loadUploadedNoiseFile(file) {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            
+            try {
+                log(`正在加载噪声文件: ${file.name}`);
+                const arrayBuffer = await file.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // 转换为单声道
+                const monoBuffer = audioContext.createBuffer(1, audioBuffer.length, audioBuffer.sampleRate);
+                const sourceData = audioBuffer.getChannelData(0);
+                const targetData = monoBuffer.getChannelData(0);
+                targetData.set(sourceData);
+                
+                uploadedNoiseBuffer = monoBuffer;
+                log(`✅ 噪声文件加载完成 (时长: ${(audioBuffer.duration).toFixed(2)}s)`);
+                
+                // 分析噪声文件，生成噪声频谱
+                await analyzeUploadedNoise(monoBuffer);
+                
+                loadNoiseBtn.textContent = "✅ 噪声已加载";
+                return true;
+            } catch (err) {
+                log(`❌ 加载噪声文件失败: ${err.message}`);
+                return false;
+            }
+        }
+
+        // 分析上传的噪声文件，生成噪声频谱
+        async function analyzeUploadedNoise(audioBuffer) {
+            if (!audioContext) return;
+            
+            log("正在分析噪声特征...");
+            
+            const noiseData = audioBuffer.getChannelData(0);
+            const noiseFFT = new Array(FFT_SIZE / 2).fill(0);
+            const window = hanningWindow(FFT_SIZE);
+            const fft = new FFT(FFT_SIZE, audioContext.sampleRate);
+            
+            // 分块分析噪声
+            let count = 0;
+            for (let i = 0; i < noiseData.length - FFT_SIZE; i += HOP_SIZE) {
+                // 提取音频块并加窗
+                const block = new Float32Array(FFT_SIZE);
+                for (let j = 0; j < FFT_SIZE; j++) {
+                    block[j] = noiseData[i + j] * window[j];
+                }
+                
+                // FFT变换
+                fft.forward(block);
+                
+                // 计算功率谱
+                for (let j = 0; j < FFT_SIZE / 2; j++) {
+                    const power = fft.real[j] * fft.real[j] + fft.imag[j] * fft.imag[j];
+                    noiseFFT[j] += power;
+                }
+                count++;
+            }
+            
+            // 归一化
+            for (let j = 0; j < FFT_SIZE / 2; j++) {
+                noiseFFT[j] /= count;
+            }
+            
+            noiseSpectrum = noiseFFT;
+            noiseSampleBuffer = audioBuffer;
+            
+            log(`✅ 噪声特征分析完成 (${count}个分析块)`);
+        }
+
+        // 采集底噪样本（优化版，支持上传的噪声文件）
         async function collectNoiseSample() {
             if (!audioContext || !sourceNode) return;
+            
+            // 如果有上传的噪声文件，直接使用
+            if (uploadedNoiseBuffer) {
+                log("使用上传的噪声样本");
+                return;
+            }
             
             log("正在采集底噪样本...");
             
@@ -630,7 +780,47 @@
             log(`✅ 底噪样本采集完成（${sampleDuration}秒）`);
         }
 
-        // 创建实时谱减法降噪处理器
+        // 噪声校准
+        async function calibrateNoise() {
+            if (!audioContext || !sourceNode) {
+                log("❌ 请先启动音频");
+                return;
+            }
+            
+            log("🎯 开始噪声校准...");
+            filterBtn.disabled = true;
+            recordBtn.disabled = true;
+            
+            try {
+                // 临时关闭降噪
+                const wasFiltering = isFiltering;
+                if (wasFiltering) {
+                    isFiltering = false;
+                    await buildAudioGraph(false);
+                }
+                
+                // 提示用户保持安静
+                alert("请保持环境安静，正在校准背景噪声（" + noiseSampleDuration.value + "秒）");
+                await collectNoiseSample();
+                
+                // 重新启用降噪
+                if (wasFiltering) {
+                    isFiltering = true;
+                    await buildAudioGraph(true);
+                }
+                
+                log("✅ 噪声校准完成！");
+                filterBtn.disabled = false;
+                recordBtn.disabled = false;
+                
+            } catch (err) {
+                log(`❌ 噪声校准失败: ${err.message}`);
+                filterBtn.disabled = false;
+                recordBtn.disabled = false;
+            }
+        }
+
+        // 创建实时谱减法降噪处理器（优化版）
         function createSpectralSubtractionProcessor() {
             if (!audioContext || !noiseSpectrum) return null;
             
@@ -639,6 +829,7 @@
             const fft = new FFT(FFT_SIZE, audioContext.sampleRate);
             const window = hanningWindow(FFT_SIZE);
             const overlapBuffer = new Float32Array(FFT_SIZE); // 重叠缓存
+            const prevCleanSpectrum = new Float32Array(FFT_SIZE / 2).fill(0); // 上一帧干净频谱
             
             processor.onaudioprocess = function(e) {
                 const inputData = e.inputBuffer.getChannelData(0);
@@ -652,18 +843,35 @@
                 // 分块处理（重叠相加）
                 for (let i = 0; i < inputData.length - FFT_SIZE; i += HOP_SIZE) {
                     // 提取音频块并加窗
-                    const block = inputData.slice(i, i + FFT_SIZE).map((x, idx) => x * window[idx]);
+                    const block = new Float32Array(FFT_SIZE);
+                    for (let j = 0; j < FFT_SIZE; j++) {
+                        block[j] = (i + j < inputData.length) ? inputData[i + j] * window[j] : 0;
+                    }
                     
                     // 执行 FFT 变换
                     fft.forward(block);
                     
-                    // 谱减法核心：减去噪声功率
+                    // 谱减法核心：优化版
                     for (let j = 0; j < FFT_SIZE / 2; j++) {
+                        // 计算信号功率
                         const signalPower = fft.real[j] * fft.real[j] + fft.imag[j] * fft.imag[j];
-                        const noisePower = noiseSpectrum[j] * reductionStrength * 2;
                         
-                        // 避免减去过多导致信号失真
-                        const cleanPower = Math.max(signalPower - noisePower, signalPower * 0.1);
+                        // 获取噪声功率（带过减因子）
+                        let noisePower = noiseSpectrum[j] * (1 + overSubtractionFactor);
+                        
+                        // 应用降噪强度
+                        noisePower *= reductionStrength;
+                        
+                        // 计算干净信号功率（带阈值，避免过度降噪）
+                        let cleanPower = signalPower - noisePower;
+                        
+                        // 应用噪声阈值，避免负功率
+                        const minPower = signalPower * noiseThreshold;
+                        cleanPower = Math.max(cleanPower, minPower);
+                        
+                        // 频谱平滑（时间域）
+                        cleanPower = (1 - spectrumSmoothing) * cleanPower + spectrumSmoothing * prevCleanSpectrum[j];
+                        prevCleanSpectrum[j] = cleanPower;
                         
                         // 恢复相位信息，重建频谱
                         const magnitude = Math.sqrt(cleanPower);
@@ -690,11 +898,12 @@
                     }
                     
                     // 更新重叠缓存
-                    overlapBuffer.set(outputData.slice(i + HOP_SIZE, i + FFT_SIZE));
+                    const copyLength = Math.min(FFT_SIZE, outputData.length - (i + HOP_SIZE));
+                    overlapBuffer.set(outputData.slice(i + HOP_SIZE, i + HOP_SIZE + copyLength));
                 }
                 
-                // 处理剩余数据
-                for (let i = Math.min(inputData.length - FFT_SIZE, inputData.length); i < inputData.length; i++) {
+                // 处理剩余数据（避免截断）
+                for (let i = Math.max(0, inputData.length - FFT_SIZE); i < inputData.length; i++) {
                     outputData[i] = inputData[i] * 0.5 * gain;
                 }
             };
@@ -774,7 +983,7 @@
             canvasContext.scale(window.devicePixelRatio, window.devicePixelRatio);
         }
 
-        // ================= 音频图构建（适配谱减法）=================
+        // ================= 音频图构建（优化版）=================
         async function buildAudioGraph(enableFilter) {
             // 停止旧的FFT绘制
             if (fftAnimationId) {
@@ -817,8 +1026,8 @@
                     sourceNode.connect(denoiseProcessor);
                     denoiseProcessor.connect(analyser);
                     analyser.connect(masterGainNode);
-                    noiseBadge.innerHTML = '<span class="badge-active">谱减法降噪已开启</span>';
-                    log("✅ 谱减法降噪已启用（基于参考代码）");
+                    noiseBadge.innerHTML = '<span class="badge-active">谱减法降噪已开启（优化版）</span>';
+                    log("✅ 优化版谱减法降噪已启用");
                 } else {
                     // 降级处理
                     sourceNode.connect(analyser);
@@ -888,7 +1097,7 @@
             });
         }
 
-        // ================= 录音控制（修改为M4A格式）=================
+        // ================= 录音控制（优化版）=================
         async function stopRecording(save = true) {
             // 双重校验，防止重复调用
             if (!isRecording || !mediaRecorder) {
@@ -1019,7 +1228,7 @@
                 recordBtn.textContent = "停止录音";
                 recordBtn.classList.add('active');
                 recorderStatus.innerHTML = '状态: <span class="status-recording">正在录音 (M4A)</span>';
-                log("🎙️ 录音已开始（谱减法降噪模式，输出M4A格式）");
+                log("🎙️ 录音已开始（优化版谱减法降噪模式，输出M4A格式）");
 
             } catch (err) {
                 log(`❌ 录音启动失败: ${err.message}`);
@@ -1088,6 +1297,8 @@
                 stopBtn.disabled = false;
                 filterBtn.disabled = false;
                 recordBtn.disabled = false;
+                calibrateBtn.disabled = false;
+                loadNoiseBtn.disabled = false;
                 inputSelect.disabled = true;
                 outputSelect.disabled = true;
                 recorderStatus.innerHTML = '状态: <span class="status-active">已启动 (M4A)</span>';
@@ -1151,6 +1362,7 @@
             masterGainNode = null;
             noiseSampleBuffer = null;
             noiseSpectrum = null;
+            uploadedNoiseBuffer = null;
             if (denoiseProcessor) {
                 try { denoiseProcessor.disconnect(); } catch (e) {}
                 denoiseProcessor = null;
@@ -1166,8 +1378,9 @@
             filterBtn.classList.remove('active');
             filterBtn.textContent = "启用降噪";
             recordBtn.disabled = true;
-            recordBtn.classList.remove('active');
-            recordBtn.textContent = "开始录音";
+            calibrateBtn.disabled = true;
+            loadNoiseBtn.disabled = true;
+            loadNoiseBtn.textContent = "加载噪声样本";
             inputSelect.disabled = false;
             outputSelect.disabled = false;
             recorderStatus.innerHTML = '状态: <span class="status-inactive">未启动</span>';
@@ -1185,6 +1398,9 @@
             strengthValue.textContent = `${noiseReductionStrength.value}%`;
             sampleDurationValue.textContent = `${noiseSampleDuration.value}s`;
             gainValue.textContent = `${(gainSlider.value / 100).toFixed(1)}x`;
+            thresholdValue.textContent = `${noiseThresholdSlider.value}%`;
+            smoothingValue.textContent = `${spectrumSmoothingSlider.value}%`;
+            overSubValue.textContent = `${overSubtractionSlider.value}%`;
 
             // 降噪强度滑块
             noiseReductionStrength.addEventListener('input', () => {
@@ -1200,6 +1416,22 @@
             gainSlider.addEventListener('input', () => {
                 const g = gainSlider.value / 100;
                 gainValue.textContent = g.toFixed(1) + 'x';
+            });
+            
+            // 新增高级参数滑块
+            noiseThresholdSlider.addEventListener('input', () => {
+                noiseThreshold = parseFloat(noiseThresholdSlider.value) / 100;
+                thresholdValue.textContent = `${noiseThresholdSlider.value}%`;
+            });
+            
+            spectrumSmoothingSlider.addEventListener('input', () => {
+                spectrumSmoothing = parseFloat(spectrumSmoothingSlider.value) / 100;
+                smoothingValue.textContent = `${spectrumSmoothingSlider.value}%`;
+            });
+            
+            overSubtractionSlider.addEventListener('input', () => {
+                overSubtractionFactor = parseFloat(overSubtractionSlider.value) / 100;
+                overSubValue.textContent = `${overSubtractionSlider.value}%`;
             });
 
             // 设备选择变更
@@ -1234,6 +1466,32 @@
                 } else {
                     await startRecording();
                 }
+            });
+            
+            // 噪声校准按钮
+            calibrateBtn.addEventListener('click', calibrateNoise);
+            
+            // 噪声文件上传
+            noiseFileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    loadNoiseBtn.disabled = false;
+                    loadNoiseBtn.textContent = `加载: ${file.name}`;
+                    loadNoiseBtn.dataset.file = file.name;
+                } else {
+                    loadNoiseBtn.disabled = true;
+                    loadNoiseBtn.textContent = "加载噪声样本";
+                }
+            });
+            
+            // 加载噪声文件
+            loadNoiseBtn.addEventListener('click', async () => {
+                const file = noiseFileInput.files[0];
+                if (!file) {
+                    log("❌ 请先选择噪声文件");
+                    return;
+                }
+                await loadUploadedNoiseFile(file);
             });
 
             // 初始化设备列表
