@@ -436,7 +436,7 @@
 
           const bp = audioContext.createBiquadFilter();
           bp.type = 'peaking';
-          bp.frequency.value = 1850;
+          bp.frequency.value = 1850; 
           bp.gain.value = parseFloat(gainSlider.value) / 100;
           bp.Q.value = 0.8;
           recNode.connect(bp);
