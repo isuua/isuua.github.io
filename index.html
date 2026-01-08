@@ -1,823 +1,1025 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>录音机</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #1a1a1a;
-      color: #eee;
-      padding: 20px;
-      margin: 0;
-    }
-    h2 { text-align: center; margin-bottom: 20px; }
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-bottom: 20px;
-      justify-content: center;
-      align-items: center;
-    }
-    button, select, input[type="number"] {
-      padding: 10px 12px;
-      border: none;
-      border-radius: 6px;
-      background: #444;
-      color: white;
-      cursor: pointer;
-      font-size: 14px;
-    }
-    select, input[type="number"] {
-      background: #333;
-      min-width: 180px;
-    }
-    input[type="number"] {
-      width: auto;
-      min-width: 60px;
-      text-align: center;
-    }
-    button:hover { background: #555; }
-    button:disabled { background: #333; color: #777; cursor: not-allowed; }
-    button.active { background: #1e88e5; }
-    button.danger { background: #d32f2f; }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能降噪录音机</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --secondary: #64748b;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --background: #1a1a1a;
+            --card: #242424;
+            --border: #333;
+            --text: #eee;
+            --text-light: #999;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+            --radius: 8px;
+            --transition: all 0.2s ease;
+        }
 
-    .canvas-container {
-      width: 100%;
-      overflow-x: auto;
-      overflow-y: hidden;
-      border-radius: 8px;
-      margin-top: 10px;
-    }
-    canvas {
-      height: 280px;
-      background: #000;
-      display: block;
-      cursor: pointer;
-      width: 3000px;
-      min-width: 3000px;
-    }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
 
-    .slider-container {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    input[type="range"] {
-      width: 120px;
-    }
-    #log {
-      color: #ffcc00;
-      font-size: 12px;
-      margin-top: 10px;
-      min-height: 20px;
-    }
-    .device-selectors {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      justify-content: center;
-      margin: 15px 0;
-    }
-  </style>
+        body {
+            background-color: var(--background);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 2rem 1rem;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+
+        .card {
+            background: var(--card);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 1.5rem;
+            border: 1px solid var(--border);
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 2rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--primary);
+        }
+
+        .subtitle {
+            text-align: center;
+            color: var(--text-light);
+            margin-bottom: 2rem;
+        }
+
+        .device-selectors {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 15px 0;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--text);
+        }
+
+        select, input[type="number"], button {
+            padding: 10px 12px;
+            border: none;
+            border-radius: 6px;
+            background: #444;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            min-width: 180px;
+        }
+
+        select:focus, input[type="number"]:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+        }
+
+        input[type="number"] {
+            width: auto;
+            min-width: 60px;
+            text-align: center;
+            background: #333;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 20px;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .btn {
+            border: none;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            min-width: 140px;
+        }
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background-color: var(--primary-hover);
+        }
+
+        .btn-success {
+            background-color: var(--success);
+            color: white;
+        }
+
+        .btn-danger {
+            background-color: var(--danger);
+            color: white;
+        }
+
+        .btn-warning {
+            background-color: var(--warning);
+            color: white;
+        }
+
+        .btn:disabled {
+            background: #333;
+            color: #777;
+            cursor: not-allowed;
+        }
+
+        .btn.active {
+            background: #1e88e5;
+        }
+
+        .waveform-container {
+            width: 100%;
+            height: 280px;
+            background-color: #000;
+            border-radius: var(--radius);
+            overflow: hidden;
+            margin: 1.5rem 0;
+            position: relative;
+        }
+
+        #waveform {
+            width: 100%;
+            height: 100%;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            background-color: var(--card);
+            border-radius: var(--radius);
+            margin-bottom: 1rem;
+            border: 1px solid var(--border);
+        }
+
+        .status {
+            font-weight: 500;
+        }
+
+        .status-active {
+            color: var(--success);
+        }
+
+        .status-inactive {
+            color: var(--text-light);
+        }
+
+        .status-recording {
+            color: var(--danger);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .timer {
+            font-family: monospace;
+            font-size: 1.1rem;
+        }
+
+        .settings {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .badge-active {
+            background-color: rgba(16, 185, 129, 0.2);
+            color: var(--success);
+        }
+
+        .badge-inactive {
+            background-color: rgba(100, 116, 139, 0.2);
+            color: var(--text-light);
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 200px;
+        }
+
+        input[type="range"] {
+            width: 120px;
+        }
+
+        #log {
+            color: #ffcc00;
+            font-size: 12px;
+            margin-top: 10px;
+            min-height: 20px;
+            text-align: center;
+        }
+
+        @media (max-width: 768px) {
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .status-bar {
+                flex-direction: column;
+                gap: 0.5rem;
+                align-items: flex-start;
+            }
+        }
+    </style>
 </head>
 <body>
-  <h2>🎤 录音机</h2>
+    <div class="container">
+        <h1>🎤 智能降噪录音机</h1>
+        <p class="subtitle">实时降噪 | 设备选择 | 波形可视化 | 流模式录音</p>
 
-  <div class="device-selectors">
-    <select id="inputSelect" disabled>
-      <option value="">请选择麦克风</option>
-    </select>
-    <select id="outputSelect" disabled>
-      <option value="">请选择扬声器</option>
-    </select>
-  </div>
+        <!-- 设备选择区 -->
+        <div class="card">
+            <div class="device-selectors">
+                <select id="inputSelect" disabled>
+                    <option value="">请选择麦克风</option>
+                </select>
+                <select id="outputSelect" disabled>
+                    <option value="">请选择扬声器</option>
+                </select>
+            </div>
 
-  <div class="controls">
-    <button id="startBtn">开始音频</button>
-    <button id="stopBtn" disabled class="danger">关闭音频</button>
-    <button id="filterBtn" disabled>启用降噪</button>
-    <button id="recordBtn" disabled>开始录音</button>
-    
-    <div class="slider-container">
-      <label>人声增益:</label>
-      <input type="range" id="gainSlider" min="0" max="300" value="150" />
-      <span id="gainValue">1.5x</span>
+            <!-- 设置区 -->
+            <div class="settings">
+                <div class="slider-container">
+                    <label>降噪强度:</label>
+                    <input type="range" id="noise-reduction-strength" min="0" max="100" value="50" />
+                    <span id="strength-value">50%</span>
+                </div>
+                <div class="slider-container">
+                    <label>人声增益:</label>
+                    <input type="range" id="gainSlider" min="0" max="300" value="150" />
+                    <span id="gainValue">1.5x</span>
+                </div>
+                <div class="slider-container">
+                    <label>最大时长(秒):</label>
+                    <input type="number" id="maxDurationInput" min="0" max="7200" value="0" />
+                </div>
+            </div>
+
+            <!-- 状态信息 -->
+            <div class="status-bar">
+                <div class="status-container">
+                    <span class="status" id="recorder-status">状态: <span class="status-inactive">未启动</span></span>
+                    <span class="badge" id="noise-badge" style="margin-left: 1rem;">
+                        <span class="badge-inactive">降噪已关闭</span>
+                    </span>
+                </div>
+                <div class="timer" id="recording-timer">00:00:00</div>
+            </div>
+            
+            <div id="log">就绪</div>
+
+            <!-- 控制按钮 -->
+            <div class="controls">
+                <button id="startBtn" class="btn btn-primary">开始音频</button>
+                <button id="stopBtn" class="btn btn-danger" disabled>关闭音频</button>
+                <button id="filterBtn" class="btn btn-warning" disabled>启用降噪</button>
+                <button id="recordBtn" class="btn btn-success" disabled>开始录音</button>
+            </div>
+        </div>
+
+        <!-- 波形可视化区域 -->
+        <div class="card">
+            <h3 style="margin-bottom: 1rem; text-align: center;">实时声音波形</h3>
+            <div class="waveform-container">
+                <canvas id="waveform"></canvas>
+            </div>
+        </div>
     </div>
 
-    <div class="slider-container">
-      <label title="0 = 自动内存保护（推荐）">最大时长(秒):</label>
-      <input type="number" id="maxDurationInput" min="0" max="7200" value="0" style="width:60px; background:#333; color:white; text-align:center;" />
-    </div>
-  </div>
-
-  <div class="canvas-container">
-    <canvas id="fftCanvas"></canvas>
-  </div>
-  <div id="log"></div>
-
-  <script>
-    // ================= 全局状态 =================
-    let audioContext = null;
-    let sourceNode = null;
-    let stream = null;
-    let analyser = null;
-    let masterGainNode = null; // 主增益（保证输出稳定）
-    let compressorNode = null; // 压缩器（仅抑制尖峰，不影响降噪）
-    let filterChain = [];       // 滤波链
-    let isFiltering = false;
-    let isRecording = false;
-    let mediaRecorder = null;
-    let recordedChunks = [];
-    let currentInputDeviceId = localStorage.getItem('audioInputDeviceId') || 'default';
-    let currentOutputDeviceId = localStorage.getItem('audioOutputDeviceId') || 'default';
-    let fftAnimationId = null;  // FFT动画ID（用于停止）
-
-    let fileHandle = null;
-    let writableStream = null;
-    let writer = null;
-
-    let recordingStartTime = null;
-    let memoryGuardTimer = null;
-
-    // ========== 降噪核心配置（恢复强降噪+解决断续）==========
-    const POWER_FREQ = 50; // 工频频率
-    // 恢复上一版强降噪的工频陷波，同时保留窄带尖峰滤波
-    const notchFreqs = [
-      POWER_FREQ,        // 50Hz 基波（核心电流声）
-      POWER_FREQ * 2,    // 100Hz 2次谐波
-      POWER_FREQ * 3,    // 150Hz 3次谐波
-      POWER_FREQ * 4,    // 200Hz 4次谐波
-      POWER_FREQ * 5,    // 250Hz 5次谐波
-      POWER_FREQ * 6,    // 300Hz 6次谐波
-      19.9, 60.1, 180.2  // 窄带尖峰（补充）
-    ];
-    // 恢复高Q值：基波用50（强压制），谐波用30，窄带尖峰用80
-    const Q_BASE = 50;    // 50Hz基波高Q值（恢复上一版强降噪）
-    const Q_HARMONIC = 30;// 谐波Q值（平衡降噪与音质）
-    const Q_NARROW = 80;  // 窄带尖峰高Q值
-    const HPF_FREQ = 55;  // 高通（避开50Hz基波，过滤低频噪声）
-    const LPF_FREQ = 18000;// 低通（放宽上限，避免削弱人声）
-
-    const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
-
-    // ================= DOM =================
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const filterBtn = document.getElementById('filterBtn');
-    const recordBtn = document.getElementById('recordBtn');
-    const gainSlider = document.getElementById('gainSlider');
-    const gainValue = document.getElementById('gainValue');
-    const canvas = document.getElementById('fftCanvas');
-    const ctx = canvas.getContext('2d');
-    const logEl = document.getElementById('log');
-    const inputSelect = document.getElementById('inputSelect');
-    const outputSelect = document.getElementById('outputSelect');
-
-    function log(msg) {
-      console.log(msg);
-      logEl.textContent = msg;
-    }
-
-    // === Canvas 配置 ===
-    const MARGIN_LEFT = 60;
-    const MARGIN_BOTTOM = 50;
-    const MARGIN_RIGHT = 20;
-    const MARGIN_TOP = 10;
-    const LOGICAL_CANVAS_WIDTH = 3000;
-    const CANVAS_HEIGHT = 280;
-
-    function resizeCanvas() {
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = LOGICAL_CANVAS_WIDTH * dpr;
-      canvas.height = CANVAS_HEIGHT * dpr;
-      ctx.scale(dpr, dpr);
-    }
-    window.addEventListener('resize', resizeCanvas);
-    resizeCanvas();
-
-    // ================= 设备枚举 =================
-    async function enumerateDevices() {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioInputs = devices.filter(d => d.kind === 'audioinput');
-        const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
-
-        inputSelect.innerHTML = '<option value="">请选择麦克风</option>';
-        outputSelect.innerHTML = '<option value="">请选择扬声器</option>';
-
-        audioInputs.forEach(device => {
-          const option = document.createElement('option');
-          option.value = device.deviceId;
-          option.text = device.label || `麦克风 ${inputSelect.children.length}`;
-          if (device.deviceId === currentInputDeviceId) option.selected = true;
-          inputSelect.appendChild(option);
-        });
-
-        if (typeof HTMLAudioElement.prototype.setSinkId === 'function') {
-          audioOutputs.forEach(device => {
-            const option = document.createElement('option');
-            option.value = device.deviceId;
-            option.text = device.label || `扬声器 ${outputSelect.children.length}`;
-            if (device.deviceId === currentOutputDeviceId) option.selected = true;
-            outputSelect.appendChild(option);
-          });
-          outputSelect.disabled = false;
-        } else {
-          outputSelect.disabled = true;
-          outputSelect.innerHTML = '<option>当前浏览器不支持扬声器选择</option>';
-        }
-
-        inputSelect.disabled = false;
-      } catch (err) {
-        log("❌ 设备枚举失败: " + err.message);
-      }
-    }
-
-    // ========== 强降噪滤波链（恢复上一版效果+稳定）==========
-    function createHighEffectNoiseFilter() {
-      // 清空旧滤波链（带容错）
-      filterChain.forEach(node => {
-        try { 
-          node.disconnect(); 
-          if (node instanceof AudioNode) node = null;
-        } catch (e) {}
-      });
-      filterChain = [];
-
-      // 1. 前置高通：过滤55Hz以下底噪，避开50Hz基波（恢复上一版参数）
-      const highpass = audioContext.createBiquadFilter();
-      highpass.type = 'highpass';
-      highpass.frequency.value = HPF_FREQ;
-      highpass.Q.value = 0.7; // 平滑过渡，不影响人声
-      highpass.frequency.setValueAtTime(HPF_FREQ, audioContext.currentTime);
-      filterChain.push(highpass);
-
-      // 2. 强降噪陷波：恢复上一版的工频谐波全覆盖
-      notchFreqs.forEach((freq, index) => {
-        const notch = audioContext.createBiquadFilter();
-        notch.type = 'notch';
-        notch.frequency.value = freq;
-        // 前6个是工频谐波（50-300Hz），后3个是窄带尖峰
-        if (index === 0) {
-          notch.Q.value = Q_BASE; // 50Hz基波用最高Q值（强压制）
-        } else if (index < 6) {
-          notch.Q.value = Q_HARMONIC; // 谐波用中高Q值
-        } else {
-          notch.Q.value = Q_NARROW; // 窄带尖峰用超高Q值
-        }
-        notch.frequency.setValueAtTime(freq, audioContext.currentTime);
-        filterChain[filterChain.length-1].connect(notch);
-        filterChain.push(notch);
-      });
-
-      // 3. 后置低通：放宽到18kHz，避免削弱人声（恢复上一版）
-      const lowpass = audioContext.createBiquadFilter();
-      lowpass.type = 'lowpass';
-      lowpass.frequency.value = LPF_FREQ;
-      lowpass.Q.value = 0.7;
-      filterChain[filterChain.length-1].connect(lowpass);
-      filterChain.push(lowpass);
-
-      // 4. 人声增益补偿：恢复上一版0-300%增益，1850Hz核心频段强化
-      const peaking = audioContext.createBiquadFilter();
-      peaking.type = 'peaking';
-      peaking.frequency.value = 1850; // 人声核心频段
-      peaking.gain.value = (parseFloat(gainSlider.value) / 100) - 1; // 增益补偿
-      peaking.Q.value = 0.8;
-      filterChain[filterChain.length-1].connect(peaking);
-      filterChain.push(peaking);
-
-      // 5. 主增益：保证音量不衰减（解决降噪后声音变小的感知）
-      const gain = audioContext.createGain();
-      gain.gain.value = parseFloat(gainSlider.value) / 100;
-      gain.gain.setValueAtTime(gain.gain.value, audioContext.currentTime);
-      filterChain[filterChain.length-1].connect(gain);
-      filterChain.push(gain);
-
-      // 6. 轻量压缩器：仅抑制尖峰，不影响降噪效果
-      if (!compressorNode) {
-        compressorNode = audioContext.createDynamicsCompressor();
-        compressorNode.threshold.value = -18; // 放宽阈值，减少压缩
-        compressorNode.knee.value = 10;       
-        compressorNode.ratio.value = 2;       // 低压缩比，不削弱降噪
-        compressorNode.attack.value = 0.01;   
-        compressorNode.release.value = 0.3;   
-      }
-      filterChain[filterChain.length-1].connect(compressorNode);
-      filterChain.push(compressorNode);
-
-      return {
-        input: filterChain[0],
-        output: filterChain[filterChain.length-1]
-      };
-    }
-
-    // ========== 稳定音频图构建（保留断续修复逻辑）==========
-    function buildAudioGraph(enableFilter) {
-      // 停止旧的FFT绘制，避免资源占用
-      if (fftAnimationId) {
-        cancelAnimationFrame(fftAnimationId);
-        fftAnimationId = null;
-      }
-
-      // 重置分析器（带容错）
-      if (analyser) {
-        try { analyser.disconnect(); } catch (e) {}
-        analyser = null;
-      }
-      analyser = audioContext.createAnalyser();
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.5; // 恢复上一版FFT平滑度
-
-      // 确保主增益节点存在且稳定
-      if (!masterGainNode) {
-        masterGainNode = audioContext.createGain();
-        masterGainNode.gain.value = 1.0; // 直接满音量，避免降噪后音量低
-        masterGainNode.connect(audioContext.destination);
-      }
-
-      // 断开sourceNode旧连接（带容错）
-      try { sourceNode.disconnect(); } catch (e) {}
-
-      if (enableFilter) {
-        // 启用降噪：source → 强降噪滤波链 → 分析器 → 主增益 → 扬声器
-        const filter = createHighEffectNoiseFilter();
-        sourceNode.connect(filter.input);
-        filter.output.connect(analyser);
-        analyser.connect(masterGainNode);
-        log("✅ 降噪已启用（强工频降噪+尖峰压制）");
-      } else {
-        // 禁用降噪：source → 分析器 → 主增益 → 扬声器
-        sourceNode.connect(analyser);
-        analyser.connect(masterGainNode);
-        log("✅ 降噪已关闭");
-      }
-
-      // 重启FFT绘制（保留低资源占用逻辑）
-      drawFFT();
-    }
-
-    // ================= 辅助函数 =================
-    function estimateRecordedSize() {
-      if (!recordedChunks.length) return 0;
-      return recordedChunks.reduce((total, chunk) => total + chunk.size, 0);
-    }
-
-    function checkMemoryPressure() {
-      if (!isRecording || !recordingStartTime) return;
-
-      const maxDurationInput = document.getElementById('maxDurationInput');
-      const maxDurationSeconds = parseInt(maxDurationInput?.value) || 0;
-
-      if (maxDurationSeconds > 0) {
-        const elapsedSeconds = (Date.now() - recordingStartTime) / 1000;
-        if (elapsedSeconds >= maxDurationSeconds) {
-          console.log(`[Auto Stop] Reached max duration: ${maxDurationSeconds}s`);
-          stopRecording(true);
-          return;
-        }
-      }
-
-      if (maxDurationSeconds === 0 && !fileHandle) {
-        const estimated = estimateRecordedSize();
-        if (estimated > MAX_ESTIMATED_MEMORY_BYTES * 0.9) {
-          console.warn(`[Auto Stop] Memory limit reached: ${(estimated / 1024 / 1024).toFixed(1)}MB`);
-          stopRecording(true);
-        }
-      }
-    }
-
-    function clearGuardTimer() {
-      if (memoryGuardTimer) {
-        clearInterval(memoryGuardTimer);
-        memoryGuardTimer = null;
-      }
-    }
-
-    function generateFilename() {
-      const now = new Date();
-      const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      return `recording_${timestamp}.m4a`;
-    }
-
-    // ================= 音频控制（稳定+强降噪）=================
-    async function stopAllAudio() {
-      clearGuardTimer();
-
-      // 停止FFT绘制，释放资源
-      if (fftAnimationId) {
-        cancelAnimationFrame(fftAnimationId);
-        fftAnimationId = null;
-      }
-
-      if (isRecording) {
-        await stopRecording(false);
-      }
-
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-        stream = null;
-      }
-
-      if (audioContext) {
-        try { 
-          await audioContext.close(); 
-        } catch (e) {}
-        audioContext = null;
-      }
-
-      // 重置所有节点
-      sourceNode = null;
-      analyser = null;
-      masterGainNode = null;
-      compressorNode = null;
-      filterChain.forEach(node => { try { node.disconnect(); } catch (e) {} });
-      filterChain = [];
-      isFiltering = false;
-
-      // 重置UI
-      startBtn.disabled = false;
-      startBtn.textContent = "开始音频";
-      stopBtn.disabled = true;
-      filterBtn.disabled = true;
-      filterBtn.classList.remove('active');
-      filterBtn.textContent = "启用降噪";
-      recordBtn.disabled = true;
-      recordBtn.classList.remove('active');
-      recordBtn.textContent = "开始录音";
-      inputSelect.disabled = false;
-      log("音频已关闭");
-    }
-
-    async function stopRecording(save = true) {
-      if (!isRecording) return;
-
-      isRecording = false;
-      recordingStartTime = null;
-      clearGuardTimer();
-
-      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-      }
-
-      let filename = generateFilename();
-      let mimeType = 'audio/mp4';
-
-      if (!MediaRecorder.isTypeSupported('audio/mp4')) {
-        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-          mimeType = 'audio/webm;codecs=opus';
-          filename = filename.replace('.m4a', '.webm');
-        } else {
-          mimeType = 'audio/webm';
-          filename = filename.replace('.m4a', '.webm');
-        }
-      }
-
-      if (writer) {
-        try {
-          await writer.close();
-          if (save) log(`✅ 录音已保存为: ${filename}`);
-        } catch (e) {
-          console.warn('Writer close error:', e);
-          if (save) log('⚠️ 文件写入未完成');
-        }
-        writer = null;
-        writableStream = null;
-        fileHandle = null;
-      }
-
-      if (save && recordedChunks.length > 0 && !fileHandle) {
-        const blob = new Blob(recordedChunks, { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        log(`✅ 录音已保存为: ${filename}`);
-      }
-
-      recordedChunks = [];
-      mediaRecorder = null;
-      recordBtn.textContent = "开始录音";
-      recordBtn.classList.remove('active');
-    }
-
-    // ================= 事件绑定（稳定+强降噪）=================
-    startBtn.onclick = async () => {
-      try {
-        log("正在启动音频...");
-
-        // 1. 低延迟创建AudioContext
-        if (!audioContext) {
-          audioContext = new (window.AudioContext || window.webkitAudioContext)({
-            latencyHint: 'interactive', 
-            sampleRate: 44100
-          });
-        }
-        if (audioContext.state === 'suspended') {
-          await audioContext.resume();
-        }
-
-        // 2. 获取麦克风流（恢复上一版约束）
-        const constraints = {
-          audio: {
-            deviceId: currentInputDeviceId === 'default' ? undefined : { exact: currentInputDeviceId },
-            sampleRate: 44100,
-            channelCount: 1
-          }
-        };
-
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        sourceNode = audioContext.createMediaStreamSource(stream);
-
-        // 3. 初始化核心节点（保留稳定逻辑）
-        if (!masterGainNode) {
-          masterGainNode = audioContext.createGain();
-          masterGainNode.gain.value = 1.0; // 直接满音量，保证降噪后音量
-          masterGainNode.connect(audioContext.destination);
-        }
-
-        // 4. 构建音频图（禁用降噪启动，保留稳定）
-        buildAudioGraph(false);
-
-        // 5. 简化增益过渡，避免降噪效果感知弱
-        masterGainNode.gain.value = 1.0;
-
-        // 更新UI
-        startBtn.disabled = true;
-        startBtn.textContent = "✅ 音频运行中";
-        stopBtn.disabled = false;
-        filterBtn.disabled = false;
-        recordBtn.disabled = false;
-        inputSelect.disabled = true;
-        log("音频已启动！（强降噪模式）");
-
-      } catch (err) {
-        log("❌ 麦克风错误: " + err.message);
-        alert("无法访问麦克风: " + err.message);
-        if (audioContext) await audioContext.close();
-        audioContext = null;
-        stream = null;
-        sourceNode = null;
-      }
-    };
-
-    stopBtn.onclick = () => {
-      stopAllAudio();
-    };
-
-    inputSelect.onchange = () => {
-      currentInputDeviceId = inputSelect.value || 'default';
-      localStorage.setItem('audioInputDeviceId', currentInputDeviceId);
-    };
-
-    outputSelect.onchange = () => {
-      if (outputSelect.disabled) return;
-      currentOutputDeviceId = outputSelect.value || 'default';
-      localStorage.setItem('audioOutputDeviceId', currentOutputDeviceId);
-    };
-
-    filterBtn.onclick = () => {
-      isFiltering = !isFiltering;
-      filterBtn.classList.toggle('active', isFiltering);
-      filterBtn.textContent = isFiltering ? "关闭降噪" : "启用降噪";
-      if (audioContext) {
-        // 简化切换逻辑，优先保证降噪效果
-        buildAudioGraph(isFiltering);
-      }
-    };
-
-    gainSlider.oninput = () => {
-      const g = gainSlider.value / 100;
-      gainValue.textContent = g.toFixed(1) + 'x';
-      // 实时更新增益，恢复上一版逻辑
-      if (audioContext) {
-        if (isFiltering && filterChain.length > 0) {
-          // 更新滤波链中的增益节点
-          filterChain[filterChain.length - 2].gain.value = g;
-          // 同步更新人声补偿增益
-          filterChain[filterChain.length - 3].gain.value = g - 1;
-        } else if (masterGainNode) {
-          masterGainNode.gain.value = g;
-        }
-      }
-    };
-
-    recordBtn.onclick = async () => {
-      if (isRecording) {
-        await stopRecording(true);
-        return;
-      }
-
-      try {
-        let useStreamWrite = false;
-        let mimeType = 'audio/mp4';
-
-        if ('showSaveFilePicker' in window) {
-          try {
-            const filename = generateFilename();
-            fileHandle = await window.showSaveFilePicker({
-              suggestedName: filename,
-              types: [{
-                description: '音频文件',
-                accept: {
-                  'audio/mp4': ['.m4a'],
-                  'audio/webm': ['.webm']
-                }
-              }]
-            });
-            useStreamWrite = true;
-          } catch (err) {
-            if (err.name !== 'AbortError') console.warn('File picker error:', err);
-            fileHandle = null;
-          }
-        }
-
-        if (!useStreamWrite) {
-          if (!MediaRecorder.isTypeSupported('audio/mp4')) {
-            mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-              ? 'audio/webm;codecs=opus' 
-              : 'audio/webm';
-          }
-          recordedChunks = [];
-        }
-
-        // 录音源：使用处理后的音频（保证降噪效果）
-        const dest = audioContext.createMediaStreamDestination();
-        if (isFiltering && filterChain.length > 0) {
-          filterChain[filterChain.length-1].connect(dest);
-        } else {
-          analyser.connect(dest);
-        }
-
-        // 确保监听不中断
-        masterGainNode.connect(audioContext.destination);
-
-        mediaRecorder = new MediaRecorder(dest.stream, { 
-          mimeType,
-          audioBitsPerSecond: 128000 
-        });
-
-        // 处理录音数据
-        if (useStreamWrite) {
-          writableStream = await fileHandle.createWritable();
-          writer = writableStream.getWriter();
-          mediaRecorder.ondataavailable = async (e) => {
-            if (e.data.size > 0 && writer) {
-              try { await writer.write(await e.data.arrayBuffer()); } 
-              catch (e) { log('⚠️ 写入文件失败'); }
-            }
-          };
-        } else {
-          mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) recordedChunks.push(e.data);
-          };
-        }
-
-        mediaRecorder.onerror = (e) => {
-          log("⚠️ 录音错误: " + e.error);
-          stopRecording(false);
-        };
-
-        // 延迟启动，保留稳定逻辑
-        setTimeout(() => {
-          mediaRecorder.start(100);
-          recordingStartTime = Date.now();
-          memoryGuardTimer = setInterval(checkMemoryPressure, 500);
-
-          isRecording = true;
-          recordBtn.textContent = "停止录音";
-          recordBtn.classList.add('active');
-
-          const mode = useStreamWrite ? '（流式写入）' : '（内存缓存 · 自动保护）';
-          log("🎙️ 录音已开始" + mode);
-        }, 100);
-
-      } catch (err) {
-        log("❌ 录音启动失败: " + err.message);
-        console.error(err);
-      }
-    };
-
-    // ======== FFT绘制（恢复上一版效果+低资源）========
-    function drawFFT() {
-      if (!analyser) return;
-      // 保留低资源绘制逻辑
-      fftAnimationId = requestAnimationFrame(() => {
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        analyser.getByteFrequencyData(dataArray);
-
-        // 清空画布
-        ctx.clearRect(0, 0, LOGICAL_CANVAS_WIDTH, CANVAS_HEIGHT);
-        const plotWidth = LOGICAL_CANVAS_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
-        const plotHeight = CANVAS_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
-
-        // 绘制频谱（恢复上一版样式）
-        const barWidth = plotWidth / bufferLength;
-        ctx.fillStyle = 'cyan';
-        for (let i = 0; i < bufferLength; i++) {
-          const barHeight = (dataArray[i] / 255) * plotHeight;
-          const x = MARGIN_LEFT + i * barWidth;
-          const y = MARGIN_TOP + (plotHeight - barHeight);
-          ctx.fillRect(x, y, barWidth - 1, barHeight);
-        }
-
-        // 绘制坐标轴（恢复上一版完整标签）
-        ctx.fillStyle = '#aaa';
-        ctx.font = '12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        const sampleRate = audioContext.sampleRate || 44100;
-        const nyquist = sampleRate / 2;
-        const xLabels = [];
-        for (let f = 0; f <= 22000; f += 2000) { // 恢复2000Hz步长
-          xLabels.push({ freq: f, ratio: f / nyquist });
-        }
-        if (nyquist > 22000) xLabels.push({ freq: Math.round(nyquist), ratio: 1 });
-        xLabels.forEach(label => {
-          const x = MARGIN_LEFT + label.ratio * plotWidth;
-          if (x >= MARGIN_LEFT && x <= LOGICAL_CANVAS_WIDTH - MARGIN_RIGHT) {
-            ctx.fillText(`${Math.round(label.freq / 1000)}k`, x, CANVAS_HEIGHT - MARGIN_BOTTOM + 10);
-            ctx.beginPath();
-            ctx.moveTo(x, CANVAS_HEIGHT - MARGIN_BOTTOM);
-            ctx.lineTo(x, CANVAS_HEIGHT - MARGIN_BOTTOM + 5);
-            ctx.strokeStyle = '#555';
-            ctx.stroke();
-          }
-        });
-        ctx.fillText('频率 (Hz)', LOGICAL_CANVAS_WIDTH / 2, CANVAS_HEIGHT - 10);
-
-        // Y轴标签（恢复完整）
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-        const yLabels = [
-          { value: 255, ratio: 0 },
-          { value: 192, ratio: 0.25 },
-          { value: 128, ratio: 0.5 },
-          { value: 64,  ratio: 0.75 },
-          { value: 0,   ratio: 1 }
+    <script>
+        // ================= 全局状态 =================
+        const logEl = document.getElementById('log');
+        let audioContext = null;
+        let stream = null;
+        let sourceNode = null;
+        let analyser = null;
+        let masterGainNode = null;
+        let compressorNode = null;
+        let filterChain = [];
+        let isFiltering = false;
+        let isRecording = false;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let currentInputDeviceId = localStorage.getItem('audioInputDeviceId') || 'default';
+        let currentOutputDeviceId = localStorage.getItem('audioOutputDeviceId') || 'default';
+        let fftAnimationId = null;
+        let recordingStartTime = null;
+        let memoryGuardTimer = null;
+        let audioOutputElement = null;
+        
+        // 设备相关
+        const inputSelect = document.getElementById('inputSelect');
+        const outputSelect = document.getElementById('outputSelect');
+        
+        // 降噪配置
+        const POWER_FREQ = 50;
+        const notchFreqs = [
+            POWER_FREQ, POWER_FREQ * 2, POWER_FREQ * 3,
+            POWER_FREQ * 4, POWER_FREQ * 5, POWER_FREQ * 6,
+            19.9, 60.1, 180.2
         ];
-        yLabels.forEach(label => {
-          const y = MARGIN_TOP + label.ratio * plotHeight;
-          ctx.fillText(label.value.toString(), MARGIN_LEFT - 10, y);
-          ctx.beginPath();
-          ctx.moveTo(MARGIN_LEFT - 5, y);
-          ctx.lineTo(MARGIN_LEFT + 5, y);
-          ctx.strokeStyle = '#555';
-          ctx.stroke();
+        const Q_BASE = 50;
+        const Q_HARMONIC = 30;
+        const Q_NARROW = 80;
+        const HPF_FREQ = 55;
+        const LPF_FREQ = 18000;
+        const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
+
+        // DOM 元素
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const filterBtn = document.getElementById('filterBtn');
+        const recordBtn = document.getElementById('recordBtn');
+        const gainSlider = document.getElementById('gainSlider');
+        const gainValue = document.getElementById('gainValue');
+        const noiseReductionStrength = document.getElementById('noise-reduction-strength');
+        const strengthValue = document.getElementById('strength-value');
+        const maxDurationInput = document.getElementById('maxDurationInput');
+        const waveformCanvas = document.getElementById('waveform');
+        const recorderStatus = document.getElementById('recorder-status');
+        const noiseBadge = document.getElementById('noise-badge');
+        const recordingTimer = document.getElementById('recording-timer');
+        
+        let canvasContext;
+        let canvasWidth;
+        let canvasHeight;
+
+        // ================= 工具函数 =================
+        function log(msg) {
+            console.log(msg);
+            logEl.textContent = msg;
+        }
+
+        function formatTime(seconds) {
+            const hours = Math.floor(seconds / 3600).toString().padStart(2, '0');
+            const minutes = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+            const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
+            return `${hours}:${minutes}:${secs}`;
+        }
+
+        function updateRecordingTimer() {
+            const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+            recordingTimer.textContent = formatTime(elapsed);
+        }
+
+        function stopRecordingTimer() {
+            clearInterval(memoryGuardTimer);
+            clearTimeout(timeoutTimer);
+            recordingTimer.textContent = '00:00:00';
+        }
+
+        function estimateRecordedSize() {
+            if (!recordedChunks.length) return 0;
+            return recordedChunks.reduce((total, chunk) => total + chunk.size, 0);
+        }
+
+        function checkMemoryPressure() {
+            if (!isRecording || !recordingStartTime) return;
+
+            const maxDurationSeconds = parseInt(maxDurationInput.value) || 0;
+
+            if (maxDurationSeconds > 0) {
+                const elapsedSeconds = (Date.now() - recordingStartTime) / 1000;
+                if (elapsedSeconds >= maxDurationSeconds) {
+                    log(`[自动停止] 达到最大时长: ${maxDurationSeconds}s`);
+                    stopRecording(true);
+                    return;
+                }
+            }
+
+            if (maxDurationSeconds === 0) {
+                const estimated = estimateRecordedSize();
+                if (estimated > MAX_ESTIMATED_MEMORY_BYTES * 0.9) {
+                    log(`[自动停止] 内存限制已达: ${(estimated / 1024 / 1024).toFixed(1)}MB`);
+                    stopRecording(true);
+                }
+            }
+        }
+
+        function generateFilename() {
+            const now = new Date();
+            const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            return `recording_${timestamp}.webm`;
+        }
+
+        // ================= 设备处理 =================
+        async function enumerateDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const audioInputs = devices.filter(d => d.kind === 'audioinput');
+                const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+
+                // 清空并重新填充麦克风列表
+                inputSelect.innerHTML = '<option value="">请选择麦克风</option>';
+                audioInputs.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `麦克风 ${inputSelect.children.length}`;
+                    if (device.deviceId === currentInputDeviceId) option.selected = true;
+                    inputSelect.appendChild(option);
+                });
+
+                // 检查扬声器选择支持
+                if (typeof HTMLAudioElement.prototype.setSinkId === 'function') {
+                    outputSelect.innerHTML = '<option value="">请选择扬声器</option>';
+                    audioOutputs.forEach(device => {
+                        const option = document.createElement('option');
+                        option.value = device.deviceId;
+                        option.text = device.label || `扬声器 ${outputSelect.children.length}`;
+                        if (device.deviceId === currentOutputDeviceId) option.selected = true;
+                        outputSelect.appendChild(option);
+                    });
+                    outputSelect.disabled = false;
+                } else {
+                    outputSelect.innerHTML = '<option>当前浏览器不支持扬声器选择</option>';
+                    outputSelect.disabled = true;
+                }
+
+                inputSelect.disabled = false;
+                log("✅ 设备列表已更新");
+            } catch (err) {
+                log("❌ 设备枚举失败: " + err.message);
+            }
+        }
+
+        // 设置输出设备
+        async function setAudioOutputDevice(deviceId) {
+            if (!audioOutputElement) {
+                audioOutputElement = new Audio();
+            }
+            
+            if (deviceId && deviceId !== 'default' && typeof audioOutputElement.setSinkId === 'function') {
+                try {
+                    await audioOutputElement.setSinkId(deviceId);
+                    log(`✅ 输出设备已切换到: ${deviceId.substring(0, 8)}...`);
+                } catch (err) {
+                    log(`⚠️ 切换输出设备失败: ${err.message}`);
+                }
+            }
+        }
+
+        // ================= 画布初始化 =================
+        function initCanvas() {
+            canvasContext = waveformCanvas.getContext('2d');
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+        }
+
+        function resizeCanvas() {
+            const container = waveformCanvas.parentElement;
+            canvasWidth = container.clientWidth;
+            canvasHeight = container.clientHeight;
+            waveformCanvas.width = canvasWidth * window.devicePixelRatio;
+            waveformCanvas.height = canvasHeight * window.devicePixelRatio;
+            canvasContext.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+
+        // ================= 降噪滤波链 =================
+        function createHighEffectNoiseFilter() {
+            // 清空旧滤波链
+            filterChain.forEach(node => {
+                try { node.disconnect(); } catch (e) {}
+            });
+            filterChain = [];
+
+            // 1. 高通滤波器
+            const highpass = audioContext.createBiquadFilter();
+            highpass.type = 'highpass';
+            highpass.frequency.value = HPF_FREQ;
+            highpass.Q.value = 0.7;
+            filterChain.push(highpass);
+
+            // 2. 陷波滤波器（工频降噪）
+            notchFreqs.forEach((freq, index) => {
+                const notch = audioContext.createBiquadFilter();
+                notch.type = 'notch';
+                notch.frequency.value = freq;
+                
+                if (index === 0) {
+                    notch.Q.value = Q_BASE * (noiseReductionStrength.value / 100);
+                } else if (index < 6) {
+                    notch.Q.value = Q_HARMONIC * (noiseReductionStrength.value / 100);
+                } else {
+                    notch.Q.value = Q_NARROW * (noiseReductionStrength.value / 100);
+                }
+                
+                filterChain[filterChain.length-1].connect(notch);
+                filterChain.push(notch);
+            });
+
+            // 3. 低通滤波器
+            const lowpass = audioContext.createBiquadFilter();
+            lowpass.type = 'lowpass';
+            lowpass.frequency.value = LPF_FREQ;
+            lowpass.Q.value = 0.7;
+            filterChain[filterChain.length-1].connect(lowpass);
+            filterChain.push(lowpass);
+
+            // 4. 人声增益补偿
+            const peaking = audioContext.createBiquadFilter();
+            peaking.type = 'peaking';
+            peaking.frequency.value = 1850;
+            peaking.gain.value = (parseFloat(gainSlider.value) / 100) - 1;
+            peaking.Q.value = 0.8;
+            filterChain[filterChain.length-1].connect(peaking);
+            filterChain.push(peaking);
+
+            // 5. 增益控制
+            const gain = audioContext.createGain();
+            gain.gain.value = parseFloat(gainSlider.value) / 100;
+            filterChain[filterChain.length-1].connect(gain);
+            filterChain.push(gain);
+
+            // 6. 压缩器
+            if (!compressorNode) {
+                compressorNode = audioContext.createDynamicsCompressor();
+                compressorNode.threshold.value = -18;
+                compressorNode.knee.value = 10;
+                compressorNode.ratio.value = 2;
+                compressorNode.attack.value = 0.01;
+                compressorNode.release.value = 0.3;
+            }
+            filterChain[filterChain.length-1].connect(compressorNode);
+            filterChain.push(compressorNode);
+
+            return {
+                input: filterChain[0],
+                output: filterChain[filterChain.length-1]
+            };
+        }
+
+        // ================= 音频图构建 =================
+        function buildAudioGraph(enableFilter) {
+            // 停止旧的FFT绘制
+            if (fftAnimationId) {
+                cancelAnimationFrame(fftAnimationId);
+                fftAnimationId = null;
+            }
+
+            // 重置分析器
+            if (analyser) {
+                try { analyser.disconnect(); } catch (e) {}
+                analyser = null;
+            }
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 1024;
+            analyser.smoothingTimeConstant = 0.5;
+
+            // 主增益节点
+            if (!masterGainNode) {
+                masterGainNode = audioContext.createGain();
+                masterGainNode.gain.value = 1.0;
+            }
+
+            // 断开旧连接
+            try { sourceNode.disconnect(); } catch (e) {}
+
+            if (enableFilter) {
+                // 启用降噪
+                const filter = createHighEffectNoiseFilter();
+                sourceNode.connect(filter.input);
+                filter.output.connect(analyser);
+                analyser.connect(masterGainNode);
+                noiseBadge.innerHTML = '<span class="badge-active">降噪已开启</span>';
+                log("✅ 降噪已启用（强工频降噪+尖峰压制）");
+            } else {
+                // 禁用降噪
+                sourceNode.connect(analyser);
+                analyser.connect(masterGainNode);
+                noiseBadge.innerHTML = '<span class="badge-inactive">降噪已关闭</span>';
+                log("✅ 降噪已关闭");
+            }
+
+            // 连接到输出设备
+            masterGainNode.connect(audioContext.destination);
+            
+            // 如果有指定的输出设备，通过AudioElement播放
+            if (audioOutputElement && currentOutputDeviceId && currentOutputDeviceId !== 'default') {
+                const dest = audioContext.createMediaStreamDestination();
+                masterGainNode.connect(dest);
+                audioOutputElement.srcObject = dest.stream;
+                audioOutputElement.play().catch(e => log(`⚠️ 播放错误: ${e.message}`));
+            }
+
+            // 启动FFT绘制
+            drawWaveform();
+        }
+
+        // ================= 波形绘制 =================
+        function drawWaveform() {
+            if (!analyser) return;
+            
+            fftAnimationId = requestAnimationFrame(() => {
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                analyser.getByteTimeDomainData(dataArray);
+                
+                // 清空画布
+                canvasContext.clearRect(0, 0, canvasWidth, canvasHeight);
+                
+                // 绘制波形
+                canvasContext.lineWidth = 2;
+                canvasContext.strokeStyle = '#2563eb';
+                canvasContext.beginPath();
+                
+                const sliceWidth = canvasWidth / bufferLength;
+                let x = 0;
+                
+                for (let i = 0; i < bufferLength; i++) {
+                    const v = dataArray[i] / 128.0;
+                    const y = v * canvasHeight / 2;
+                    
+                    if (i === 0) {
+                        canvasContext.moveTo(x, y);
+                    } else {
+                        canvasContext.lineTo(x, y);
+                    }
+                    
+                    x += sliceWidth;
+                }
+                
+                canvasContext.lineTo(canvasWidth, canvasHeight / 2);
+                canvasContext.stroke();
+                
+                drawWaveform();
+            });
+        }
+
+        // ================= 录音控制 =================
+        async function stopRecording(save = true) {
+            if (!isRecording) return;
+
+            isRecording = false;
+            recordingStartTime = null;
+            stopRecordingTimer();
+
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+
+            // 保存录音文件
+            if (save && recordedChunks.length > 0) {
+                const filename = generateFilename();
+                const blob = new Blob(recordedChunks, { 
+                    type: 'audio/webm;codecs=opus' 
+                });
+                
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                log(`✅ 录音已保存为: ${filename}`);
+            }
+
+            recordedChunks = [];
+            mediaRecorder = null;
+            recordBtn.textContent = "开始录音";
+            recordBtn.classList.remove('active');
+            recorderStatus.innerHTML = '状态: <span class="status-active">已启动</span>';
+        }
+
+        async function startRecording() {
+            if (isRecording) return;
+
+            try {
+                // 创建录音目标
+                const dest = audioContext.createMediaStreamDestination();
+                if (isFiltering && filterChain.length > 0) {
+                    filterChain[filterChain.length-1].connect(dest);
+                } else {
+                    analyser.connect(dest);
+                }
+
+                // 初始化MediaRecorder
+                const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+                    ? 'audio/webm;codecs=opus' 
+                    : 'audio/webm';
+                
+                mediaRecorder = new MediaRecorder(dest.stream, { 
+                    mimeType,
+                    audioBitsPerSecond: 128000 
+                });
+
+                // 处理录音数据
+                recordedChunks = [];
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) {
+                        recordedChunks.push(e.data);
+                    }
+                };
+
+                mediaRecorder.onerror = (e) => {
+                    log("⚠️ 录音错误: " + e.error);
+                    stopRecording(false);
+                };
+
+                // 开始录音
+                mediaRecorder.start(100);
+                recordingStartTime = Date.now();
+                memoryGuardTimer = setInterval(() => {
+                    checkMemoryPressure();
+                    updateRecordingTimer();
+                }, 500);
+
+                isRecording = true;
+                recordBtn.textContent = "停止录音";
+                recordBtn.classList.add('active');
+                recorderStatus.innerHTML = '状态: <span class="status-recording">正在录音</span>';
+                log("🎙️ 录音已开始（流式写入 · 自动保护）");
+
+            } catch (err) {
+                log("❌ 录音启动失败: " + err.message);
+                console.error(err);
+            }
+        }
+
+        // ================= 音频控制 =================
+        async function startAudio() {
+            try {
+                log("正在启动音频...");
+
+                // 创建音频上下文
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        latencyHint: 'interactive',
+                        sampleRate: 44100
+                    });
+                }
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+
+                // 创建音频输出元素（用于设置扬声器）
+                audioOutputElement = new Audio();
+                
+                // 设置输出设备
+                if (currentOutputDeviceId && currentOutputDeviceId !== 'default') {
+                    await setAudioOutputDevice(currentOutputDeviceId);
+                }
+
+                // 请求麦克风流
+                const constraints = {
+                    audio: {
+                        deviceId: currentInputDeviceId === 'default' ? undefined : { exact: currentInputDeviceId },
+                        sampleRate: 44100,
+                        channelCount: 1,
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                };
+
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                sourceNode = audioContext.createMediaStreamSource(stream);
+
+                // 初始化主增益节点
+                if (!masterGainNode) {
+                    masterGainNode = audioContext.createGain();
+                    masterGainNode.gain.value = 1.0;
+                    masterGainNode.connect(audioContext.destination);
+                }
+
+                // 构建音频图（初始禁用降噪）
+                buildAudioGraph(false);
+
+                // 更新UI状态
+                startBtn.disabled = true;
+                startBtn.textContent = "✅ 音频运行中";
+                stopBtn.disabled = false;
+                filterBtn.disabled = false;
+                recordBtn.disabled = false;
+                inputSelect.disabled = true;
+                outputSelect.disabled = true;
+                recorderStatus.innerHTML = '状态: <span class="status-active">已启动</span>';
+                log("✅ 音频已启动！（强降噪模式）");
+
+            } catch (err) {
+                log("❌ 麦克风错误: " + err.message);
+                alert("无法访问麦克风: " + err.message);
+                
+                // 清理资源
+                if (audioContext) await audioContext.close();
+                audioContext = null;
+                stream = null;
+                sourceNode = null;
+                
+                // 重置UI
+                startBtn.disabled = false;
+                startBtn.textContent = "开始音频";
+            }
+        }
+
+        async function stopAllAudio() {
+            // 停止录音
+            if (isRecording) {
+                await stopRecording(false);
+            }
+
+            // 停止FFT绘制
+            if (fftAnimationId) {
+                cancelAnimationFrame(fftAnimationId);
+                fftAnimationId = null;
+            }
+
+            // 停止媒体流
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+
+            // 关闭音频上下文
+            if (audioContext) {
+                try { await audioContext.close(); } catch (e) {}
+                audioContext = null;
+            }
+
+            // 清理音频输出元素
+            if (audioOutputElement) {
+                audioOutputElement.pause();
+                audioOutputElement.srcObject = null;
+                audioOutputElement = null;
+            }
+
+            // 重置节点
+            sourceNode = null;
+            analyser = null;
+            masterGainNode = null;
+            compressorNode = null;
+            filterChain.forEach(node => { try { node.disconnect(); } catch (e) {} });
+            filterChain = [];
+            isFiltering = false;
+
+            // 重置UI
+            startBtn.disabled = false;
+            startBtn.textContent = "开始音频";
+            stopBtn.disabled = true;
+            filterBtn.disabled = true;
+            filterBtn.classList.remove('active');
+            filterBtn.textContent = "启用降噪";
+            recordBtn.disabled = true;
+            recordBtn.classList.remove('active');
+            recordBtn.textContent = "开始录音";
+            inputSelect.disabled = false;
+            outputSelect.disabled = false;
+            recorderStatus.innerHTML = '状态: <span class="status-inactive">未启动</span>';
+            noiseBadge.innerHTML = '<span class="badge-inactive">降噪已关闭</span>';
+            stopRecordingTimer();
+            log("✅ 音频已关闭");
+        }
+
+        // ================= 事件绑定 =================
+        document.addEventListener('DOMContentLoaded', async () => {
+            // 初始化画布
+            initCanvas();
+            
+            // 更新滑块显示
+            strengthValue.textContent = `${noiseReductionStrength.value}%`;
+            gainValue.textContent = `${(gainSlider.value / 100).toFixed(1)}x`;
+
+            // 降噪强度滑块
+            noiseReductionStrength.addEventListener('input', () => {
+                strengthValue.textContent = `${noiseReductionStrength.value}%`;
+                if (isFiltering && filterChain.length > 0) {
+                    // 更新陷波滤波器的Q值
+                    notchFreqs.forEach((freq, index) => {
+                        let qValue;
+                        if (index === 0) {
+                            qValue = Q_BASE * (noiseReductionStrength.value / 100);
+                        } else if (index < 6) {
+                            qValue = Q_HARMONIC * (noiseReductionStrength.value / 100);
+                        } else {
+                            qValue = Q_NARROW * (noiseReductionStrength.value / 100);
+                        }
+                        filterChain[index + 1].Q.value = qValue;
+                    });
+                }
+            });
+
+            // 增益滑块
+            gainSlider.addEventListener('input', () => {
+                const g = gainSlider.value / 100;
+                gainValue.textContent = g.toFixed(1) + 'x';
+                
+                if (audioContext) {
+                    if (isFiltering && filterChain.length > 0) {
+                        // 更新滤波链中的增益
+                        filterChain[filterChain.length - 2].gain.value = g;
+                        filterChain[filterChain.length - 3].gain.value = g - 1;
+                    } else if (masterGainNode) {
+                        masterGainNode.gain.value = g;
+                    }
+                }
+            });
+
+            // 设备选择变更
+            inputSelect.onchange = () => {
+                currentInputDeviceId = inputSelect.value || 'default';
+                localStorage.setItem('audioInputDeviceId', currentInputDeviceId);
+            };
+
+            outputSelect.onchange = () => {
+                if (outputSelect.disabled) return;
+                currentOutputDeviceId = outputSelect.value || 'default';
+                localStorage.setItem('audioOutputDeviceId', currentOutputDeviceId);
+            };
+
+            // 按钮事件
+            startBtn.addEventListener('click', startAudio);
+            stopBtn.addEventListener('click', stopAllAudio);
+            
+            filterBtn.addEventListener('click', () => {
+                isFiltering = !isFiltering;
+                filterBtn.classList.toggle('active', isFiltering);
+                filterBtn.textContent = isFiltering ? "关闭降噪" : "启用降噪";
+                if (audioContext) {
+                    buildAudioGraph(isFiltering);
+                }
+            });
+            
+            recordBtn.addEventListener('click', async () => {
+                if (isRecording) {
+                    await stopRecording(true);
+                } else {
+                    await startRecording();
+                }
+            });
+
+            // 初始化设备列表
+            try {
+                // 请求临时权限以枚举设备
+                const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                tempStream.getTracks().forEach(track => track.stop());
+                await enumerateDevices();
+            } catch (err) {
+                log("⚠️ 需要麦克风权限才能枚举设备");
+                enumerateDevices(); // 即使没有权限也尝试枚举
+            }
+
+            // 监听设备变化
+            navigator.mediaDevices.addEventListener('devicechange', enumerateDevices);
         });
-
-        ctx.save();
-        ctx.translate(15, CANVAS_HEIGHT / 2);
-        ctx.rotate(-Math.PI / 2);
-        ctx.textAlign = 'center';
-        ctx.fillText('幅度', 0, 0);
-        ctx.restore();
-
-        drawFFT();
-      });
-    }
-
-    // ======== 点击获取频率（辅助调整）========
-    function handleCanvasClick(clientX, clientY) {
-      if (!analyser || !audioContext) return;
-
-      const containerRect = document.querySelector('.canvas-container').getBoundingClientRect();
-      const canvasRect = canvas.getBoundingClientRect();
-      const scrollLeft = document.querySelector('.canvas-container').scrollLeft;
-
-      const x = clientX - canvasRect.left + scrollLeft;
-      const plotWidth = LOGICAL_CANVAS_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
-      if (x < MARGIN_LEFT || x > LOGICAL_CANVAS_WIDTH - MARGIN_RIGHT) return;
-
-      const normalizedX = (x - MARGIN_LEFT) / plotWidth;
-      const freq = normalizedX * (audioContext.sampleRate / 2);
-      log(`🖱️ 当前频率: ${freq.toFixed(1)} Hz（可添加到陷波列表）`);
-    }
-
-    canvas.addEventListener('click', (e) => handleCanvasClick(e.clientX, e.clientY));
-    canvas.addEventListener('touchend', (e) => {
-      if (e.changedTouches.length > 0) {
-        handleCanvasClick(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
-        e.preventDefault();
-      }
-    }, { passive: false });
-
-    // 初始化
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(stream => {
-        stream.getTracks().forEach(track => track.stop());
-        enumerateDevices();
-      })
-      .catch(() => enumerateDevices());
-    navigator.mediaDevices.addEventListener('devicechange', enumerateDevices);
-  </script>
+    </script>
 </body>
 </html>
