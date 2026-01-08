@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>音频录音 · 支持设备选择（兼容 iPhone）</title>
+  <title>实时音频滤波与增强（流式M4A录音）</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, sans-serif;
@@ -58,26 +58,25 @@
       font-size: 12px;
       margin-top: 10px;
       min-height: 20px;
-      text-align: center;
     }
     .device-selectors {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
       justify-content: center;
-      margin-bottom: 15px;
+      margin: 15px 0;
     }
   </style>
 </head>
 <body>
-  <h2>🎤 音频录音 · 设备选择（兼容 iPhone）</h2>
+  <h2>🎤 实时音频滤波与增强（流式M4A录音）</h2>
 
   <div class="device-selectors">
     <select id="inputSelect" disabled>
-      <option value="">-- 选择麦克风 --</option>
+      <option value="">请选择麦克风</option>
     </select>
     <select id="outputSelect" disabled>
-      <option value="">-- 选择扬声器 --</option>
+      <option value="">请选择扬声器</option>
     </select>
   </div>
 
@@ -95,7 +94,7 @@
   </div>
 
   <canvas id="fftCanvas"></canvas>
-  <div id="log">请通过 HTTPS 访问（如 GitHub Pages）</div>
+  <div id="log"></div>
 
   <script>
     // ================= 全局状态 =================
@@ -103,12 +102,19 @@
     let sourceNode = null;
     let stream = null;
     let analyser = null;
+    let gainNode = null;
+    let filters = [];
     let isFiltering = false;
     let isRecording = false;
     let mediaRecorder = null;
-    let recordedChunks = [];
-    let filters = [];
-    let currentInputDeviceId = null;
+    let recordedChunks = []; // 仅用于降级模式
+    let currentInputDeviceId = localStorage.getItem('audioInputDeviceId') || 'default';
+    let currentOutputDeviceId = localStorage.getItem('audioOutputDeviceId') || 'default';
+
+    // 流式写入相关
+    let fileHandle = null;
+    let writableStream = null;
+    let writer = null;
 
     const notchFreqs = [50, 100, 150, 200, 250];
     const Q = 35;
@@ -141,54 +147,41 @@
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    // ================= 安全检查 mediaDevices =================
-    const hasMediaDevices = navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function';
-
-    // ================= 枚举设备（安全调用）=================
+    // ================= 设备枚举 =================
     async function enumerateDevices() {
-      if (!hasMediaDevices) {
-        log("⚠️ 当前环境不支持设备枚举");
-        return;
-      }
-
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
         const audioInputs = devices.filter(d => d.kind === 'audioinput');
         const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
 
-        // 清空选择框
-        inputSelect.innerHTML = '<option value="">-- 选择麦克风 --</option>';
-        outputSelect.innerHTML = '<option value="">-- 选择扬声器 --</option>';
+        inputSelect.innerHTML = '<option value="">请选择麦克风</option>';
+        outputSelect.innerHTML = '<option value="">请选择扬声器</option>';
 
-        // 填充输入设备
         audioInputs.forEach(device => {
           const option = document.createElement('option');
           option.value = device.deviceId;
-          // iOS 通常返回空 label，用默认名
           option.text = device.label || `麦克风 ${inputSelect.children.length}`;
+          if (device.deviceId === currentInputDeviceId) option.selected = true;
           inputSelect.appendChild(option);
         });
 
-        // 填充输出设备（注意：iOS 不支持 setSinkId）
-        audioOutputs.forEach(device => {
-          const option = document.createElement('option');
-          option.value = device.deviceId;
-          option.text = device.label || `扬声器 ${outputSelect.children.length}`;
-          outputSelect.appendChild(option);
-        });
-
-        // 启用选择框（仅当有设备时）
-        inputSelect.disabled = audioInputs.length <= 1;
-        outputSelect.disabled = audioOutputs.length === 0 || !('setSinkId' in HTMLAudioElement.prototype);
-
-        // 默认选中第一个输入设备
-        if (audioInputs.length > 0) {
-          currentInputDeviceId = audioInputs[0].deviceId;
-          inputSelect.value = currentInputDeviceId;
+        if (typeof HTMLAudioElement.prototype.setSinkId === 'function') {
+          audioOutputs.forEach(device => {
+            const option = document.createElement('option');
+            option.value = device.deviceId;
+            option.text = device.label || `扬声器 ${outputSelect.children.length}`;
+            if (device.deviceId === currentOutputDeviceId) option.selected = true;
+            outputSelect.appendChild(option);
+          });
+          outputSelect.disabled = false;
+        } else {
+          outputSelect.disabled = true;
+          outputSelect.innerHTML = '<option>当前浏览器不支持扬声器选择</option>';
         }
 
+        inputSelect.disabled = false;
       } catch (err) {
-        log("⚠️ 设备枚举失败: " + (err.message || err));
+        log("❌ 设备枚举失败: " + err.message);
       }
     }
 
@@ -237,7 +230,7 @@
     // ================= 停止所有音频资源 =================
     async function stopAllAudio() {
       if (isRecording) {
-        await stopRecording(false);
+        await stopRecording(true); // 确保异步完成
       }
 
       if (stream) {
@@ -256,26 +249,42 @@
       isFiltering = false;
 
       startBtn.disabled = false;
+      startBtn.textContent = "开始音频";
       stopBtn.disabled = true;
       filterBtn.disabled = true;
       filterBtn.classList.remove('active');
+      filterBtn.textContent = "启用滤波";
       recordBtn.disabled = true;
       recordBtn.classList.remove('active');
-      inputSelect.disabled = true;
-      outputSelect.disabled = true;
+      recordBtn.textContent = "开始录音";
+      inputSelect.disabled = false;
       log("音频已关闭");
     }
 
-    // ================= 停止录音 =================
+    // ================= 停止录音（通用）=================
     async function stopRecording(save = true) {
       if (!isRecording) return;
+
       isRecording = false;
 
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
       }
 
-      if (save && recordedChunks.length > 0) {
+      // 关闭流（如果正在流式写入）
+      if (writer) {
+        try {
+          await writer.close();
+        } catch (e) {
+          console.warn('Writer close error:', e);
+        }
+        writer = null;
+        writableStream = null;
+        fileHandle = null;
+      }
+
+      // 如果是传统模式（非流式），且需要保存
+      if (save && recordedChunks.length > 0 && !fileHandle) {
         const now = new Date();
         const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
         let filename = `recording_${timestamp}.m4a`;
@@ -300,7 +309,7 @@
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        log(`✅ 录音已保存: ${filename}`);
+        log(`✅ 录音已保存为: ${filename}`);
       }
 
       recordedChunks = [];
@@ -309,24 +318,16 @@
       recordBtn.classList.remove('active');
     }
 
-    // ================= 启动音频（由用户点击触发）=================
+    // ================= 启动音频 =================
     startBtn.onclick = async () => {
-      if (!hasMediaDevices) {
-        log("❌ 浏览器不支持 getUserMedia");
-        alert("您的浏览器不支持录音功能。");
-        return;
-      }
-
       try {
-        log("正在请求麦克风权限...");
+        log("正在启动音频...");
 
         const constraints = {
           audio: {
-            deviceId: currentInputDeviceId ? { exact: currentInputDeviceId } : undefined,
+            deviceId: currentInputDeviceId === 'default' ? undefined : { exact: currentInputDeviceId },
             sampleRate: 44100,
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true
+            channelCount: 1
           }
         };
 
@@ -340,33 +341,36 @@
           await audioContext.resume();
         }
 
-        // 尝试设置输出设备（仅支持的浏览器）
-        if (outputSelect.value && 'setSinkId' in HTMLAudioElement.prototype) {
-          try {
-            await audioContext.destination.setSinkId(outputSelect.value);
-          } catch (e) {
-            log("⚠️ 无法切换输出设备: " + e.message);
-          }
-        }
-
         startBtn.disabled = true;
         startBtn.textContent = "✅ 音频运行中";
         stopBtn.disabled = false;
         filterBtn.disabled = false;
         recordBtn.disabled = false;
-        inputSelect.disabled = true; // 开始后锁定
-        outputSelect.disabled = !('setSinkId' in HTMLAudioElement.prototype);
-        log("✅ 麦克风已启用");
+        inputSelect.disabled = true;
+        log("音频已启动！");
 
         drawFFT();
       } catch (err) {
-        const msg = err.message || err.name || '未知错误';
-        log("❌ 无法访问麦克风: " + msg);
-        alert("请允许麦克风权限，并确保通过 HTTPS 访问。");
+        log("❌ 麦克风错误: " + err.message);
+        alert("无法访问麦克风: " + err.message);
       }
     };
 
-    stopBtn.onclick = () => stopAllAudio();
+    // 新增：关闭按钮
+    stopBtn.onclick = () => {
+      stopAllAudio();
+    };
+
+    inputSelect.onchange = () => {
+      currentInputDeviceId = inputSelect.value || 'default';
+      localStorage.setItem('audioInputDeviceId', currentInputDeviceId);
+    };
+
+    outputSelect.onchange = () => {
+      if (outputSelect.disabled) return;
+      currentOutputDeviceId = outputSelect.value || 'default';
+      localStorage.setItem('audioOutputDeviceId', currentOutputDeviceId);
+    };
 
     filterBtn.onclick = () => {
       isFiltering = !isFiltering;
@@ -383,22 +387,7 @@
       }
     };
 
-    // ================= 设备切换事件 =================
-    inputSelect.onchange = () => {
-      currentInputDeviceId = inputSelect.value || null;
-    };
-
-    outputSelect.onchange = async () => {
-      if (!audioContext || !('setSinkId' in HTMLAudioElement.prototype)) return;
-      try {
-        await audioContext.destination.setSinkId(outputSelect.value);
-        log("🔊 输出设备已切换");
-      } catch (err) {
-        log("❌ 切换输出失败: " + err.message);
-      }
-    };
-
-    // ================= 开始录音 =================
+    // ================= 开始录音（核心逻辑）=================
     recordBtn.onclick = async () => {
       if (isRecording) {
         await stopRecording(true);
@@ -406,16 +395,46 @@
       }
 
       try {
+        // === 第一步：尝试流式保存（弹出保存对话框）===
+        let useStreamWrite = false;
         let mimeType = 'audio/mp4';
-        if (!MediaRecorder.isTypeSupported('audio/mp4')) {
-          if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-            mimeType = 'audio/webm;codecs=opus';
-          } else {
-            mimeType = 'audio/webm';
+
+        if ('showSaveFilePicker' in window) {
+          try {
+            const now = new Date();
+            const timestamp = now.toISOString().slice(0,19).replace(/:/g, '-');
+            fileHandle = await window.showSaveFilePicker({
+              suggestedName: `recording_${timestamp}.m4a`,
+              types: [{
+                description: '音频文件',
+                accept: {
+                  'audio/mp4': ['.m4a'],
+                  'audio/webm': ['.webm']
+                }
+              }]
+            });
+            useStreamWrite = true;
+          } catch (err) {
+            if (err.name !== 'AbortError') {
+              console.warn('File System Access API error:', err);
+            }
+            fileHandle = null;
           }
         }
-        recordedChunks = [];
 
+        // 如果无法流式写入，降级到传统模式
+        if (!useStreamWrite) {
+          if (!MediaRecorder.isTypeSupported('audio/mp4')) {
+            if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+              mimeType = 'audio/webm;codecs=opus';
+            } else {
+              mimeType = 'audio/webm';
+            }
+          }
+          recordedChunks = [];
+        }
+
+        // === 第二步：构建录制音频图 ===
         const dest = audioContext.createMediaStreamDestination();
         let recNode = sourceNode;
 
@@ -436,7 +455,7 @@
 
           const bp = audioContext.createBiquadFilter();
           bp.type = 'peaking';
-          bp.frequency.value = 1850; 
+          bp.frequency.value = 1850;
           bp.gain.value = parseFloat(gainSlider.value) / 100;
           bp.Q.value = 0.8;
           recNode.connect(bp);
@@ -444,23 +463,57 @@
         }
         recNode.connect(dest);
 
+        // === 第三步：创建 MediaRecorder ===
+        if (useStreamWrite) {
+          if (MediaRecorder.isTypeSupported('audio/mp4')) {
+            mimeType = 'audio/mp4';
+          } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+            mimeType = 'audio/webm;codecs=opus';
+          } else {
+            mimeType = 'audio/webm';
+          }
+        }
+
         mediaRecorder = new MediaRecorder(dest.stream, { mimeType });
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) recordedChunks.push(e.data);
-        };
+
+        if (useStreamWrite) {
+          writableStream = await fileHandle.createWritable();
+          writer = writableStream.getWriter();
+
+          mediaRecorder.ondataavailable = async (e) => {
+            if (e.data.size > 0 && writer) {
+              try {
+                const arrayBuffer = await e.data.arrayBuffer();
+                await writer.write(arrayBuffer);
+              } catch (writeErr) {
+                console.error('Write error:', writeErr);
+                log('⚠️ 写入文件失败');
+              }
+            }
+          };
+        } else {
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) recordedChunks.push(e.data);
+          };
+        }
+
         mediaRecorder.onerror = (e) => {
           log("⚠️ 录音错误: " + e.error);
           stopRecording(false);
         };
 
-        mediaRecorder.start(100);
+        mediaRecorder.start(100); // 每100ms触发一次，实现低延迟流式
+
         isRecording = true;
         recordBtn.textContent = "停止录音";
         recordBtn.classList.add('active');
-        log("🎙️ 录音中...（点击停止以保存）");
+
+        const mode = useStreamWrite ? '（流式写入）' : '（内存缓存）';
+        log("🎙️ 录音已开始" + mode);
 
       } catch (err) {
-        log("❌ 录音失败: " + (err.message || err));
+        log("❌ 录音启动失败: " + err.message);
+        console.error(err);
       }
     };
 
@@ -484,17 +537,15 @@
       requestAnimationFrame(drawFFT);
     }
 
-    // ================= 初始化 =================
-    if (hasMediaDevices) {
-      // 初始枚举设备（不会请求权限）
-      enumerateDevices();
-      // 监听设备变化（如插拔耳机）
-      navigator.mediaDevices.addEventListener('devicechange', enumerateDevices);
-    } else {
-      log("⚠️ 当前环境不支持媒体设备 API");
-    }
+    // 初始化设备列表
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        stream.getTracks().forEach(track => track.stop());
+        enumerateDevices();
+      })
+      .catch(() => enumerateDevices());
 
-    log("请点击「开始音频」并授权麦克风（需 HTTPS）"); 
+    navigator.mediaDevices.addEventListener('devicechange', enumerateDevices);
   </script>
 </body>
 </html>
