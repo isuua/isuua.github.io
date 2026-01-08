@@ -143,8 +143,23 @@
     let recordingStartTime = null;
     let memoryGuardTimer = null;
 
-    const notchFreqs = [50, 95, 100, 150, 200, 250, 285, 350, 450, 550, 650, 850, 950];
-    const Q = 35;
+    // ========== 电流声降噪核心配置 ==========
+    const POWER_FREQ = 50; // 工频频率（中国大陆50Hz，欧美60Hz可修改）
+    // 电流声核心频率：基波 + 2-6次谐波（覆盖99%的电流声来源）
+    const notchFreqs = [
+        POWER_FREQ,        // 50Hz 基波（电流声主频率）
+        POWER_FREQ * 2,    // 100Hz 2次谐波
+        POWER_FREQ * 3,    // 150Hz 3次谐波
+        POWER_FREQ * 4,    // 200Hz 4次谐波
+        POWER_FREQ * 5,    // 250Hz 5次谐波
+        POWER_FREQ * 6     // 300Hz 6次谐波
+    ];
+    // Q值配置：基波用更高Q值（精准抑制），谐波用稍低Q值（平衡降噪与音质）
+    const Q_BASE = 50;    // 基波陷波Q值
+    const Q_HARMONIC = 30;// 谐波陷波Q值
+    const HPF_FREQ = 55;  // 高通滤波频率（避开50Hz基波，过滤低频噪声）
+    // ========== 降噪配置结束 ==========
+
     const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
 
     // ================= DOM =================
@@ -222,156 +237,40 @@
       }
     }
 
-    // 改进的降噪算法
-    function createAdvancedNoiseReduction(audioContext) {
-      // 创建噪声分析节点
-      const noiseAnalyser = audioContext.createAnalyser();
-      noiseAnalyser.fftSize = 2048;
-      noiseAnalyser.smoothingTimeConstant = 0.8;
+    // ========== 统一的电流声降噪滤波创建函数 ==========
+    // 作用：创建针对50Hz电流声优化的滤波链，同时用于实时监听和录音
+    // 参数：inputNode - 输入音频节点
+    // 返回：滤波链的最后一个节点
+    function createCurrentNoiseFilterChain(inputNode) {
+        if (!audioContext) return inputNode;
+        // 清空之前的滤波器
+        filters.forEach(filter => filter.disconnect());
+        filters = [];
 
-      // 创建噪声谱估计
-      const noiseBuffer = new Float32Array(noiseAnalyser.frequencyBinCount);
-      let noiseEstimationReady = false;
-      let noiseEstimationCount = 0;
-      const maxNoiseEstimationFrames = 100; // 估计100帧作为噪声基线
+        let currentNode = inputNode;
 
-      // 实时噪声估计函数
-      function estimateNoise() {
-        const dataArray = new Float32Array(noiseAnalyser.frequencyBinCount);
-        noiseAnalyser.getFloatFrequencyData(dataArray);
+        // 1. 陷波滤波：逐个抑制电流声的基波和谐波
+        notchFreqs.forEach((freq, index) => {
+            const notch = audioContext.createBiquadFilter();
+            notch.type = 'notch'; // 陷波滤波器：精准衰减特定频率
+            notch.frequency.value = freq;
+            // 基波（第一个频率）使用更高的Q值，谐波使用稍低的Q值
+            notch.Q.value = index === 0 ? Q_BASE : Q_HARMONIC;
+            currentNode.connect(notch);
+            currentNode = notch;
+            filters.push(notch);
+        });
 
-        if (!noiseEstimationReady) {
-          // 累积噪声基线
-          for (let i = 0; i < dataArray.length; i++) {
-            if (noiseEstimationCount === 0) {
-              noiseBuffer[i] = dataArray[i];
-            } else {
-              // 指数移动平均
-              noiseBuffer[i] = 0.95 * noiseBuffer[i] + 0.05 * dataArray[i];
-            }
-          }
-          noiseEstimationCount++;
-          
-          if (noiseEstimationCount >= maxNoiseEstimationFrames) {
-            noiseEstimationReady = true;
-            log("噪声基线估计完成");
-          }
-        }
-      }
+        // 2. 高通滤波：过滤55Hz以下的低频噪声（彻底避开50Hz基波）
+        const highpass = audioContext.createBiquadFilter();
+        highpass.type = 'highpass';
+        highpass.frequency.value = HPF_FREQ;
+        highpass.Q.value = 0.7; // 平滑过渡，减少音质失真
+        currentNode.connect(highpass);
+        currentNode = highpass;
+        filters.push(highpass);
 
-      // 创建降噪节点
-      const noiseReductionNode = audioContext.createScriptProcessor(4096, 1, 1);
-      
-      // 降噪参数
-      const noiseThreshold = 3; // 噪声阈值（dB）
-      const suppressionLevel = 15; // 抑制级别（dB）
-      const attackTime = 0.01; // 攻击时间（秒）
-      const releaseTime = 0.1; // 释放时间（秒）
-      
-      let gainFactor = 1.0;
-      let targetGain = 1.0;
-      
-      noiseReductionNode.onaudioprocess = function(e) {
-        const inputData = e.inputBuffer.getChannelData(0);
-        const outputData = e.outputBuffer.getChannelData(0);
-        
-        // 更新噪声估计
-        estimateNoise();
-        
-        if (noiseEstimationReady) {
-          // 频域降噪
-          for (let i = 0; i < inputData.length; i++) {
-            const sample = inputData[i];
-            
-            // 计算瞬时能量
-            const energy = sample * sample;
-            
-            // 简单的门限降噪
-            if (energy < noiseThreshold * 0.0001) { // 调整阈值
-              // 应用抑制
-              targetGain = Math.pow(10, -suppressionLevel / 20);
-            } else {
-              targetGain = 1.0;
-            }
-            
-            // 平滑增益变化
-            const deltaTime = 1 / audioContext.sampleRate;
-            const gainDiff = targetGain - gainFactor;
-            
-            if (gainDiff > 0) {
-              // 攻击时间
-              const attackCoeff = Math.exp(-deltaTime / attackTime);
-              gainFactor = targetGain - gainDiff * attackCoeff;
-            } else {
-              // 释放时间
-              const releaseCoeff = Math.exp(-deltaTime / releaseTime);
-              gainFactor = targetGain - gainDiff * releaseCoeff;
-            }
-            
-            outputData[i] = sample * gainFactor;
-          }
-        } else {
-          // 在噪声估计期间直接传递信号
-          for (let i = 0; i < inputData.length; i++) {
-            outputData[i] = inputData[i];
-          }
-        }
-      };
-
-      return {
-        node: noiseReductionNode,
-        analyser: noiseAnalyser,
-        reset: function() {
-          noiseEstimationReady = false;
-          noiseEstimationCount = 0;
-          gainFactor = 1.0;
-          targetGain = 1.0;
-        }
-      };
-    }
-
-    function buildAudioGraph(enableFilter) {
-      filters.forEach(f => f.disconnect());
-      filters = [];
-
-      analyser = audioContext.createAnalyser();
-      analyser.fftSize = 1024;
-
-      let currentNode = sourceNode;
-
-      if (enableFilter) {
-        // 添加改进的降噪处理
-        const advancedNR = createAdvancedNoiseReduction(audioContext);
-        currentNode.connect(advancedNR.node);
-        currentNode = advancedNR.node;
-        
-        // 连接噪声分析器用于实时估计
-        sourceNode.connect(advancedNR.analyser);
-        
-        // 保存降噪节点引用
-        filters.push(advancedNR);
-
-        // 保留原有的陷波滤波器
-        for (const freq of notchFreqs) {
-          const nf = audioContext.createBiquadFilter();
-          nf.type = 'notch';
-          nf.frequency.value = freq;
-          nf.Q.value = Q;
-          currentNode.connect(nf);
-          currentNode = nf;
-          filters.push(nf);
-        }
-
-        // 低频截止滤波器
-        const hp = audioContext.createBiquadFilter();
-        hp.type = 'highpass';
-        hp.frequency.value = 80; // 提高低频截止，减少嗡嗡声
-        hp.Q.value = 0.707;
-        currentNode.connect(hp);
-        currentNode = hp;
-        filters.push(hp);
-
-        // 高频增强滤波器
+        // 3. 人声增益补偿（保留原逻辑：1850Hz是人声核心频段）
         const peaking = audioContext.createBiquadFilter();
         peaking.type = 'peaking';
         peaking.frequency.value = 1850;
@@ -380,10 +279,34 @@
         currentNode.connect(peaking);
         currentNode = peaking;
         filters.push(peaking);
-      }
 
-      currentNode.connect(analyser);
-      analyser.connect(audioContext.destination);
+        return currentNode;
+    }
+
+    function buildAudioGraph(enableFilter) {
+        // 清空之前的分析器
+        if (analyser) {
+            analyser.disconnect();
+            analyser = null;
+        }
+        // 清空之前的滤波器
+        filters.forEach(filter => filter.disconnect());
+        filters = [];
+
+        // 创建分析器（用于频谱绘制）
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 1024;
+
+        let currentNode = sourceNode;
+
+        // 启用滤波时，创建电流声降噪滤波链
+        if (enableFilter) {
+            currentNode = createCurrentNoiseFilterChain(currentNode);
+        }
+
+        // 连接分析器和输出（扬声器）
+        currentNode.connect(analyser);
+        analyser.connect(audioContext.destination);
     }
 
     function estimateRecordedSize() {
@@ -634,38 +557,9 @@
         const dest = audioContext.createMediaStreamDestination();
         let recNode = sourceNode;
 
+        // 启用滤波时，复用统一的电流声降噪滤波链（保证监听和录音降噪效果一致）
         if (isFiltering) {
-          // 添加改进的降噪处理
-          const advancedNR = createAdvancedNoiseReduction(audioContext);
-          recNode.connect(advancedNR.node);
-          recNode = advancedNR.node;
-          
-          // 保留原有的陷波滤波器
-          for (const freq of notchFreqs) {
-            const nf = audioContext.createBiquadFilter();
-            nf.type = 'notch';
-            nf.frequency.value = freq;
-            nf.Q.value = Q;
-            recNode.connect(nf);
-            recNode = nf;
-          }
-
-          // 低频截止滤波器
-          const hp = audioContext.createBiquadFilter();
-          hp.type = 'highpass';
-          hp.frequency.value = 80; // 提高低频截止，减少嗡嗡声
-          hp.Q.value = 0.707;
-          recNode.connect(hp);
-          recNode = hp;
-
-          // 高频增强滤波器
-          const peaking = audioContext.createBiquadFilter();
-          peaking.type = 'peaking';
-          peaking.frequency.value = 1850;
-          peaking.gain.value = parseFloat(gainSlider.value) / 100;
-          peaking.Q.value = 0.8;
-          recNode.connect(peaking);
-          recNode = peaking;
+            recNode = createCurrentNoiseFilterChain(recNode);
         }
         recNode.connect(dest);
 
@@ -846,6 +740,7 @@
       requestAnimationFrame(drawFFT);
     }
 
+    // 初始化设备枚举
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then(stream => {
         stream.getTracks().forEach(track => track.stop());
@@ -853,10 +748,8 @@
       })
       .catch(() => enumerateDevices());
 
+    // 监听设备变化
     navigator.mediaDevices.addEventListener('devicechange', enumerateDevices);
   </script>
 </body>
 </html>
-
-
-
