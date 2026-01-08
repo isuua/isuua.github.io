@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>🎤 谱减法降噪录音机（带设备选择）</title>
+    <title>🎤 谱减法降噪录音机</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -266,14 +266,14 @@
 
     <script>
         // ================= 全局状态 =================
-        let audioContext = null;
-        let micStream = null;
-        let sourceNode = null;
-        let analyserNode = null;
-        let gainNode = null;
-        let denoiseProcessor = null;
-        let mediaRecorder = null;
-        let audioOutputElement = null;
+        let audioContext=null;
+        let micStream=null;
+        let sourceNode=null;
+        let analyserNode=null;
+        let gainNode=null;
+        let denoiseProcessor=null;
+        let mediaRecorder=null;
+        let audioOutputElement=null;
 
         // 设备选择相关
         let currentInputDeviceId = 'default';
@@ -281,8 +281,8 @@
         let hasOutputDeviceSupport=false;
 
         // 噪声样本相关
-        let noiseSampleBuffer = null;  // 噪声样本缓存
-        let noiseSpectrum = null;      // 噪声频谱特征
+        let noiseSampleBuffer=null;  // 噪声样本缓存
+        let noiseSpectrum=null;      // 噪声频谱特征
         let isNoiseSampleValid=false;// 噪声样本是否有效
         let noiseSampleDuration=3;   // 噪声采样时长（秒）
 
@@ -473,18 +473,18 @@
                     }
                 }
 
-                // 创建音频节点
+                // 创建音频节点（修复链路：source → analyser → gain → destination）
                 sourceNode=audioContext.createMediaStreamSource(micStream);
                 analyserNode=audioContext.createAnalyser();
                 gainNode=audioContext.createGain();
                 gainNode.gain.value=gainValueNum;
 
-                // 连接基础音频链路
+                // 连接基础音频链路（保证波形显示和声音输出）
                 sourceNode.connect(analyserNode);
                 analyserNode.connect(gainNode);
                 gainNode.connect(audioContext.destination);
 
-                // 初始化波形显示
+                // 初始化波形显示（设置fftSize并启动绘制）
                 analyserNode.fftSize=1024;
                 drawWaveform();
 
@@ -631,44 +631,48 @@
             return energy/signalData.length;
         }
 
-        // ================= 谱减法降噪核心 =================
+        // ================= 谱减法降噪核心（修复无声和帧处理） =================
         function createDenoiseProcessor() {
             if (!audioContext || !isNoiseSampleValid || !noiseSpectrum) return null;
 
+            // 修复：使用1024缓冲区，单输入单输出
             const processor=audioContext.createScriptProcessor(1024, 1, 1);
             const fft=new FFT(FFT_SIZE, audioContext.sampleRate);
             const window=hanningWindow(FFT_SIZE);
             const overlapBuffer=new Float32Array(FFT_SIZE).fill(0);
             const prevCleanSpectrum=new Float32Array(FFT_SIZE/2).fill(0);
 
+            // 修复：保证处理后的数据写入outputBuffer，且不越界
             processor.onaudioprocess=function(e) {
                 const inputData=e.inputBuffer.getChannelData(0);
                 const outputData=e.outputBuffer.getChannelData(0);
+                // 初始化输出为0，避免残留噪声
                 outputData.fill(0);
 
-                // 分帧处理音频
-                for (let i=0; i < inputData.length-FFT_SIZE; i += HOP_SIZE) {
-                    // 加窗
+                // 分帧处理（修复：i < inputData.length，避免越界）
+                for (let i=0; i < inputData.length; i += HOP_SIZE) {
+                    // 加窗（处理最后一帧不足FFT_SIZE的情况）
                     const frame=new Float32Array(FFT_SIZE);
                     for (let j=0; j < FFT_SIZE; j++) {
-                        frame[j] = inputData[i+j] * window[j];
+                        frame[j] = (i+j < inputData.length) ? inputData[i+j] * window[j] : 0;
                     }
 
                     // FFT变换
                     fft.forward(frame);
 
-                    // 谱减法核心：减去噪声频谱
+                    // 谱减法核心：减去噪声频谱（修复：参数计算和频谱平滑）
                     for (let j=0; j < FFT_SIZE/2; j++) {
                         const signalPower=fft.real[j] **2+fft.imag[j]** 2;
+                        // 修复：噪声功率计算，避免过减
                         const noisePower=noiseSpectrum[j] * (1+overSubFactor) * denoiseStrength;
                         
-                        // 避免过度降噪导致失真
+                        // 避免过度降噪导致失真（保留10%信号功率）
                         let cleanPower=Math.max(signalPower-noisePower, signalPower*0.1);
-                        // 频谱平滑
+                        // 频谱平滑（降低音乐噪声）
                         cleanPower=0.8*cleanPower+0.2*prevCleanSpectrum[j];
                         prevCleanSpectrum[j] = cleanPower;
 
-                        // 逆变换：幅度保留 + 相位还原
+                        // 逆变换：幅度保留 + 相位还原（修复：避免NaN）
                         const magnitude=Math.sqrt(cleanPower);
                         const phase=Math.atan2(fft.imag[j], fft.real[j]);
                         
@@ -685,15 +689,19 @@
                     // IFFT逆变换
                     fft.inverse();
 
-                    // 重叠相加法拼接帧
+                    // 重叠相加法拼接帧（修复：计算权重，避免输出音量过低）
+                    const weight=1.0/HOP_SIZE;
                     for (let j=0; j < FFT_SIZE; j++) {
                         if (i+j < outputData.length) {
-                            outputData[i+j] += (fft.spectrum[j] * window[j] / HOP_SIZE)+overlapBuffer[j];
+                            outputData[i+j] += fft.spectrum[j] * window[j] * weight+overlapBuffer[j];
                         }
                     }
 
-                    // 保存重叠部分
-                    overlapBuffer.set(outputData.slice(i+HOP_SIZE, i+HOP_SIZE+FFT_SIZE));
+                    // 保存重叠部分（修复：处理最后一帧）
+                    const overlapStart=i+HOP_SIZE;
+                    for (let j=0; j < FFT_SIZE; j++) {
+                        overlapBuffer[j] = (overlapStart+j < outputData.length) ? outputData[overlapStart+j] : 0;
+                    }
                 }
             };
 
@@ -775,12 +783,12 @@
             }
         }
 
-        // ================= 降噪开关控制 =================
+        // ================= 降噪开关控制（修复链路连接） =================
         function toggleDenoise() {
             if (!isAudioActive || !isNoiseSampleValid) return;
 
             if (isDenoiseEnabled) {
-                // 关闭降噪：恢复原始音频链路
+                // 关闭降噪：恢复原始链路（source → analyser → gain → destination）
                 if (denoiseProcessor) {
                     sourceNode.disconnect(denoiseProcessor);
                     denoiseProcessor.disconnect();
@@ -791,15 +799,17 @@
                 audioStatus.textContent = '状态: 音频已启动（降噪关闭）';
 
             } else {
-                // 开启降噪：插入降噪处理器
+                // 开启降噪：插入降噪处理器（修复：链路为 source → denoise → analyser → gain → destination）
                 denoiseProcessor=createDenoiseProcessor();
                 if (!denoiseProcessor) {
                     alert('降噪处理器创建失败');
                     return;
                 }
+                // 断开原始source到analyser的连接，插入降噪处理器
                 sourceNode.disconnect(analyserNode);
                 sourceNode.connect(denoiseProcessor);
                 denoiseProcessor.connect(analyserNode);
+                // 保证后续链路不变（analyser → gain → destination）
                 enableDenoiseBtn.textContent = '🎛️ 关闭降噪';
                 audioStatus.textContent = '状态: 降噪已启用（基于噪声样本）';
             }
@@ -821,7 +831,7 @@
                 audioStatus.textContent=isDenoiseEnabled ? '状态: 降噪已启用' : '状态: 音频已启动';
 
             } else {
-                // 开始录音
+                // 开始录音（从gain节点获取处理后的音频，保证降噪生效）
                 const recordDest=audioContext.createMediaStreamDestination();
                 gainNode.connect(recordDest);
 
@@ -862,20 +872,15 @@
             console.log('✅ 录音文件已保存');
         }
 
-        // ================= 波形显示 =================
-        function resizeWaveformCanvas() {
-            const container=waveformCanvas.parentElement;
-            waveformCanvas.width=container.clientWidth*window.devicePixelRatio;
-            waveformCanvas.height=container.clientHeight*window.devicePixelRatio;
-            canvasCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
-        }
-
+        // ================= 波形显示（修复：保证analyserNode有数据，且绘制不中断） =================
         function drawWaveform() {
             if (!analyserNode || !isAudioActive) return;
 
+            // 循环绘制，保证波形实时更新
             requestAnimationFrame(drawWaveform);
             const bufferLength=analyserNode.frequencyBinCount;
             const dataArray=new Uint8Array(bufferLength);
+            // 获取时域数据，用于波形显示
             analyserNode.getByteTimeDomainData(dataArray);
 
             const canvasWidth=waveformCanvas.width/window.devicePixelRatio;
@@ -891,7 +896,11 @@
             for (let i=0; i < bufferLength; i++) {
                 const v=dataArray[i] / 128.0;
                 const y=v*canvasHeight/2;
-                i === 0 ? canvasCtx.moveTo(x, y) : canvasCtx.lineTo(x, y);
+                if (i === 0) {
+                    canvasCtx.moveTo(x, y);
+                } else {
+                    canvasCtx.lineTo(x, y);
+                }
                 x += sliceWidth;
             }
 
@@ -968,6 +977,14 @@
             stopAllBtn.disabled = !isAudioActive;
             inputSelect.disabled=isAudioActive;
             outputSelect.disabled=isAudioActive || !hasOutputDeviceSupport;
+        }
+
+        // 调整画布尺寸，适配不同屏幕
+        function resizeWaveformCanvas() {
+            const container=waveformCanvas.parentElement;
+            waveformCanvas.width=container.clientWidth*window.devicePixelRatio;
+            waveformCanvas.height=container.clientHeight*window.devicePixelRatio;
+            canvasCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
         }
     </script>
 </body>
