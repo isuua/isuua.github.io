@@ -103,8 +103,8 @@
     
     <div class="slider-container">
       <label>人声增益:</label>
-      <input type="range" id="gainSlider" min="0" max="200" value="100" />
-      <span id="gainValue">1.0x</span>
+      <input type="range" id="gainSlider" min="0" max="300" value="150" />
+      <span id="gainValue">1.5x</span>
     </div>
 
     <div class="slider-container">
@@ -125,7 +125,7 @@
     let stream = null;
     let analyser = null;
     let masterGainNode = null; // 主增益（保证输出稳定）
-    let compressorNode = null; // 压缩器（抑制尖峰）
+    let compressorNode = null; // 压缩器（仅抑制尖峰，不影响降噪）
     let filterChain = [];       // 滤波链
     let isFiltering = false;
     let isRecording = false;
@@ -142,19 +142,24 @@
     let recordingStartTime = null;
     let memoryGuardTimer = null;
 
-    // ========== 降噪核心配置（精准窄带版）==========
+    // ========== 降噪核心配置（恢复强降噪+解决断续）==========
     const POWER_FREQ = 50; // 工频频率
-    // 精准窄带陷波：覆盖核心尖峰频率（含小数位提升精度）
+    // 恢复上一版强降噪的工频陷波，同时保留窄带尖峰滤波
     const notchFreqs = [
-      POWER_FREQ,        // 50Hz 基波
-      POWER_FREQ*2,      // 100Hz 2次谐波
-      POWER_FREQ*3,      // 150Hz 3次谐波
-      19.9, 60.1, 180.2  // 常见窄带尖峰补充（根据FFT波形可调整）
+      POWER_FREQ,        // 50Hz 基波（核心电流声）
+      POWER_FREQ * 2,    // 100Hz 2次谐波
+      POWER_FREQ * 3,    // 150Hz 3次谐波
+      POWER_FREQ * 4,    // 200Hz 4次谐波
+      POWER_FREQ * 5,    // 250Hz 5次谐波
+      POWER_FREQ * 6,    // 300Hz 6次谐波
+      19.9, 60.1, 180.2  // 窄带尖峰（补充）
     ];
-    const Q_NARROW = 80;  // 窄带尖峰高Q值（精准压制）
-    const Q_WIDE = 15;    // 宽频谐波低Q值（避免失真）
-    const HPF_FREQ = 60;  // 高通（过滤50Hz以下底噪，先滤波再陷波）
-    const LPF_FREQ = 15000;// 低通（过滤高频沙沙尖峰）
+    // 恢复高Q值：基波用50（强压制），谐波用30，窄带尖峰用80
+    const Q_BASE = 50;    // 50Hz基波高Q值（恢复上一版强降噪）
+    const Q_HARMONIC = 30;// 谐波Q值（平衡降噪与音质）
+    const Q_NARROW = 80;  // 窄带尖峰高Q值
+    const HPF_FREQ = 55;  // 高通（避开50Hz基波，过滤低频噪声）
+    const LPF_FREQ = 18000;// 低通（放宽上限，避免削弱人声）
 
     const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
 
@@ -231,8 +236,8 @@
       }
     }
 
-    // ========== 精准窄带滤波链（解决沙沙尖峰）==========
-    function createPrecisionNoiseFilter() {
+    // ========== 强降噪滤波链（恢复上一版效果+稳定）==========
+    function createHighEffectNoiseFilter() {
       // 清空旧滤波链（带容错）
       filterChain.forEach(node => {
         try { 
@@ -242,50 +247,64 @@
       });
       filterChain = [];
 
-      // 1. 前置高通：先过滤低频底噪，避免放大尖峰
+      // 1. 前置高通：过滤55Hz以下底噪，避开50Hz基波（恢复上一版参数）
       const highpass = audioContext.createBiquadFilter();
       highpass.type = 'highpass';
       highpass.frequency.value = HPF_FREQ;
-      highpass.Q.value = 0.707; // 巴特沃斯特性，过渡平滑
+      highpass.Q.value = 0.7; // 平滑过渡，不影响人声
       highpass.frequency.setValueAtTime(HPF_FREQ, audioContext.currentTime);
       filterChain.push(highpass);
 
-      // 2. 精准窄带陷波：区分尖峰/谐波设置不同Q值
+      // 2. 强降噪陷波：恢复上一版的工频谐波全覆盖
       notchFreqs.forEach((freq, index) => {
         const notch = audioContext.createBiquadFilter();
         notch.type = 'notch';
         notch.frequency.value = freq;
-        // 前3个是工频谐波（宽频），后3个是窄带尖峰（高Q）
-        notch.Q.value = index < 3 ? Q_WIDE : Q_NARROW;
-        // 平滑设置频率，避免突变
+        // 前6个是工频谐波（50-300Hz），后3个是窄带尖峰
+        if (index === 0) {
+          notch.Q.value = Q_BASE; // 50Hz基波用最高Q值（强压制）
+        } else if (index < 6) {
+          notch.Q.value = Q_HARMONIC; // 谐波用中高Q值
+        } else {
+          notch.Q.value = Q_NARROW; // 窄带尖峰用超高Q值
+        }
         notch.frequency.setValueAtTime(freq, audioContext.currentTime);
         filterChain[filterChain.length-1].connect(notch);
         filterChain.push(notch);
       });
 
-      // 3. 后置低通：过滤高频沙沙尖峰
+      // 3. 后置低通：放宽到18kHz，避免削弱人声（恢复上一版）
       const lowpass = audioContext.createBiquadFilter();
       lowpass.type = 'lowpass';
       lowpass.frequency.value = LPF_FREQ;
-      lowpass.Q.value = 0.707;
+      lowpass.Q.value = 0.7;
       filterChain[filterChain.length-1].connect(lowpass);
       filterChain.push(lowpass);
 
-      // 4. 人声增益（平滑调整）
+      // 4. 人声增益补偿：恢复上一版0-300%增益，1850Hz核心频段强化
+      const peaking = audioContext.createBiquadFilter();
+      peaking.type = 'peaking';
+      peaking.frequency.value = 1850; // 人声核心频段
+      peaking.gain.value = (parseFloat(gainSlider.value) / 100) - 1; // 增益补偿
+      peaking.Q.value = 0.8;
+      filterChain[filterChain.length-1].connect(peaking);
+      filterChain.push(peaking);
+
+      // 5. 主增益：保证音量不衰减（解决降噪后声音变小的感知）
       const gain = audioContext.createGain();
       gain.gain.value = parseFloat(gainSlider.value) / 100;
       gain.gain.setValueAtTime(gain.gain.value, audioContext.currentTime);
       filterChain[filterChain.length-1].connect(gain);
       filterChain.push(gain);
 
-      // 5. 压缩器：抑制尖峰音量，减少沙沙声感知
+      // 6. 轻量压缩器：仅抑制尖峰，不影响降噪效果
       if (!compressorNode) {
         compressorNode = audioContext.createDynamicsCompressor();
-        compressorNode.threshold.value = -24; // 阈值
-        compressorNode.knee.value = 12;       // 拐点（平滑过渡）
-        compressorNode.ratio.value = 4;       // 压缩比
-        compressorNode.attack.value = 0.005;  // 快速响应尖峰
-        compressorNode.release.value = 0.2;   // 缓慢释放，避免断音
+        compressorNode.threshold.value = -18; // 放宽阈值，减少压缩
+        compressorNode.knee.value = 10;       
+        compressorNode.ratio.value = 2;       // 低压缩比，不削弱降噪
+        compressorNode.attack.value = 0.01;   
+        compressorNode.release.value = 0.3;   
       }
       filterChain[filterChain.length-1].connect(compressorNode);
       filterChain.push(compressorNode);
@@ -296,7 +315,7 @@
       };
     }
 
-    // ========== 稳定音频图构建（解决断续）==========
+    // ========== 稳定音频图构建（保留断续修复逻辑）==========
     function buildAudioGraph(enableFilter) {
       // 停止旧的FFT绘制，避免资源占用
       if (fftAnimationId) {
@@ -311,14 +330,12 @@
       }
       analyser = audioContext.createAnalyser();
       analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.8; // 平滑FFT波形，减少抖动
+      analyser.smoothingTimeConstant = 0.5; // 恢复上一版FFT平滑度
 
       // 确保主增益节点存在且稳定
       if (!masterGainNode) {
         masterGainNode = audioContext.createGain();
-        masterGainNode.gain.value = 0; // 初始静音，避免启动爆音
-        // 平滑提升音量，解决启动断音
-        masterGainNode.gain.linearRampToValueAtTime(1.0, audioContext.currentTime + 0.1);
+        masterGainNode.gain.value = 1.0; // 直接满音量，避免降噪后音量低
         masterGainNode.connect(audioContext.destination);
       }
 
@@ -326,25 +343,20 @@
       try { sourceNode.disconnect(); } catch (e) {}
 
       if (enableFilter) {
-        // 启用降噪：source → 精准滤波链 → 分析器 → 主增益 → 扬声器
-        const filter = createPrecisionNoiseFilter();
+        // 启用降噪：source → 强降噪滤波链 → 分析器 → 主增益 → 扬声器
+        const filter = createHighEffectNoiseFilter();
         sourceNode.connect(filter.input);
         filter.output.connect(analyser);
         analyser.connect(masterGainNode);
-        log("✅ 降噪已启用（精准窄带滤波+压缩）");
+        log("✅ 降噪已启用（强工频降噪+尖峰压制）");
       } else {
-        // 禁用降噪：source → 分析器 → 主增益 → 扬声器（压缩器仍保留）
+        // 禁用降噪：source → 分析器 → 主增益 → 扬声器
         sourceNode.connect(analyser);
         analyser.connect(masterGainNode);
-        // 压缩器仍工作，抑制尖峰
-        if (compressorNode) {
-          analyser.connect(compressorNode);
-          compressorNode.connect(masterGainNode);
-        }
-        log("✅ 降噪已关闭（保留压缩器抑制尖峰）");
+        log("✅ 降噪已关闭");
       }
 
-      // 重启FFT绘制（降低帧率，减少资源占用）
+      // 重启FFT绘制（保留低资源占用逻辑）
       drawFFT();
     }
 
@@ -391,7 +403,7 @@
       return `recording_${timestamp}.m4a`;
     }
 
-    // ================= 音频控制（稳定版）=================
+    // ================= 音频控制（稳定+强降噪）=================
     async function stopAllAudio() {
       clearGuardTimer();
 
@@ -412,14 +424,12 @@
 
       if (audioContext) {
         try { 
-          // 先静音主增益，再关闭，避免爆音
-          if (masterGainNode) masterGainNode.gain.value = 0;
           await audioContext.close(); 
         } catch (e) {}
         audioContext = null;
       }
 
-      // 重置所有节点（彻底释放）
+      // 重置所有节点
       sourceNode = null;
       analyser = null;
       masterGainNode = null;
@@ -498,57 +508,46 @@
       recordBtn.classList.remove('active');
     }
 
-    // ================= 事件绑定（稳定版）=================
+    // ================= 事件绑定（稳定+强降噪）=================
     startBtn.onclick = async () => {
       try {
         log("正在启动音频...");
 
-        // 1. 先创建AudioContext（用户交互时创建，避免悬浮）
+        // 1. 低延迟创建AudioContext
         if (!audioContext) {
           audioContext = new (window.AudioContext || window.webkitAudioContext)({
-            latencyHint: 'interactive', // 低延迟模式，减少断续
+            latencyHint: 'interactive', 
             sampleRate: 44100
           });
         }
-        // 2. 恢复AudioContext（避免suspended状态）
         if (audioContext.state === 'suspended') {
           await audioContext.resume();
         }
 
-        // 3. 获取麦克风流（带约束，保证单声道/低延迟）
+        // 2. 获取麦克风流（恢复上一版约束）
         const constraints = {
           audio: {
             deviceId: currentInputDeviceId === 'default' ? undefined : { exact: currentInputDeviceId },
             sampleRate: 44100,
-            channelCount: 1,
-            echoCancellation: true, // 开启回声消除
-            noiseSuppression: false // 关闭浏览器默认降噪，用自定义滤波
+            channelCount: 1
           }
         };
 
         stream = await navigator.mediaDevices.getUserMedia(constraints);
         sourceNode = audioContext.createMediaStreamSource(stream);
 
-        // 4. 初始化主增益和压缩器（提前创建，避免动态中断）
+        // 3. 初始化核心节点（保留稳定逻辑）
         if (!masterGainNode) {
           masterGainNode = audioContext.createGain();
-          masterGainNode.gain.value = 0; // 初始静音
+          masterGainNode.gain.value = 1.0; // 直接满音量，保证降噪后音量
           masterGainNode.connect(audioContext.destination);
         }
-        if (!compressorNode) {
-          compressorNode = audioContext.createDynamicsCompressor();
-          compressorNode.threshold.value = -24;
-          compressorNode.knee.value = 12;
-          compressorNode.ratio.value = 4;
-          compressorNode.attack.value = 0.005;
-          compressorNode.release.value = 0.2;
-        }
 
-        // 5. 构建音频图（禁用降噪，避免启动时滤波复杂）
+        // 4. 构建音频图（禁用降噪启动，保留稳定）
         buildAudioGraph(false);
 
-        // 6. 平滑提升主增益，解决启动爆音/断音
-        masterGainNode.gain.linearRampToValueAtTime(1.0, audioContext.currentTime + 0.2);
+        // 5. 简化增益过渡，避免降噪效果感知弱
+        masterGainNode.gain.value = 1.0;
 
         // 更新UI
         startBtn.disabled = true;
@@ -557,12 +556,11 @@
         filterBtn.disabled = false;
         recordBtn.disabled = false;
         inputSelect.disabled = true;
-        log("音频已启动！（低延迟模式）");
+        log("音频已启动！（强降噪模式）");
 
       } catch (err) {
         log("❌ 麦克风错误: " + err.message);
         alert("无法访问麦克风: " + err.message);
-        // 出错时清理资源
         if (audioContext) await audioContext.close();
         audioContext = null;
         stream = null;
@@ -590,27 +588,23 @@
       filterBtn.classList.toggle('active', isFiltering);
       filterBtn.textContent = isFiltering ? "关闭降噪" : "启用降噪";
       if (audioContext) {
-        // 切换滤波时先降低音量，避免突变
-        masterGainNode.gain.linearRampToValueAtTime(0.5, audioContext.currentTime + 0.1);
+        // 简化切换逻辑，优先保证降噪效果
         buildAudioGraph(isFiltering);
-        // 恢复音量
-        masterGainNode.gain.linearRampToValueAtTime(1.0, audioContext.currentTime + 0.2);
       }
     };
 
     gainSlider.oninput = () => {
       const g = gainSlider.value / 100;
       gainValue.textContent = g.toFixed(1) + 'x';
-      // 平滑更新增益，避免突变
+      // 实时更新增益，恢复上一版逻辑
       if (audioContext) {
         if (isFiltering && filterChain.length > 0) {
-          filterChain[filterChain.length - 2].gain.linearRampToValueAtTime(
-            g, audioContext.currentTime + 0.1
-          );
+          // 更新滤波链中的增益节点
+          filterChain[filterChain.length - 2].gain.value = g;
+          // 同步更新人声补偿增益
+          filterChain[filterChain.length - 3].gain.value = g - 1;
         } else if (masterGainNode) {
-          masterGainNode.gain.linearRampToValueAtTime(
-            g, audioContext.currentTime + 0.1
-          );
+          masterGainNode.gain.value = g;
         }
       }
     };
@@ -654,7 +648,7 @@
           recordedChunks = [];
         }
 
-        // 录音源：使用处理后的音频（保证和监听一致）
+        // 录音源：使用处理后的音频（保证降噪效果）
         const dest = audioContext.createMediaStreamDestination();
         if (isFiltering && filterChain.length > 0) {
           filterChain[filterChain.length-1].connect(dest);
@@ -662,12 +656,12 @@
           analyser.connect(dest);
         }
 
-        // 确保录音时监听不中断（主增益始终连接输出）
+        // 确保监听不中断
         masterGainNode.connect(audioContext.destination);
 
         mediaRecorder = new MediaRecorder(dest.stream, { 
           mimeType,
-          audioBitsPerSecond: 128000 // 固定码率，减少录音断续
+          audioBitsPerSecond: 128000 
         });
 
         // 处理录音数据
@@ -691,7 +685,7 @@
           stopRecording(false);
         };
 
-        // 开始录音（延迟启动，避免节点连接未完成）
+        // 延迟启动，保留稳定逻辑
         setTimeout(() => {
           mediaRecorder.start(100);
           recordingStartTime = Date.now();
@@ -711,10 +705,10 @@
       }
     };
 
-    // ======== 优化FFT绘制（降低资源占用）========
+    // ======== FFT绘制（恢复上一版效果+低资源）========
     function drawFFT() {
       if (!analyser) return;
-      // 降低绘制频率（每2帧绘制一次），减少主线程占用
+      // 保留低资源绘制逻辑
       fftAnimationId = requestAnimationFrame(() => {
         const bufferLength = analyser.frequencyBinCount;
         const dataArray = new Uint8Array(bufferLength);
@@ -725,7 +719,7 @@
         const plotWidth = LOGICAL_CANVAS_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
         const plotHeight = CANVAS_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
 
-        // 绘制频谱（简化计算，减少循环耗时）
+        // 绘制频谱（恢复上一版样式）
         const barWidth = plotWidth / bufferLength;
         ctx.fillStyle = 'cyan';
         for (let i = 0; i < bufferLength; i++) {
@@ -735,7 +729,7 @@
           ctx.fillRect(x, y, barWidth - 1, barHeight);
         }
 
-        // 绘制坐标轴（简化，减少绘制次数）
+        // 绘制坐标轴（恢复上一版完整标签）
         ctx.fillStyle = '#aaa';
         ctx.font = '12px sans-serif';
         ctx.textAlign = 'center';
@@ -743,7 +737,7 @@
         const sampleRate = audioContext.sampleRate || 44100;
         const nyquist = sampleRate / 2;
         const xLabels = [];
-        for (let f = 0; f <= 22000; f += 4000) { // 减少标签数量
+        for (let f = 0; f <= 22000; f += 2000) { // 恢复2000Hz步长
           xLabels.push({ freq: f, ratio: f / nyquist });
         }
         if (nyquist > 22000) xLabels.push({ freq: Math.round(nyquist), ratio: 1 });
@@ -760,10 +754,16 @@
         });
         ctx.fillText('频率 (Hz)', LOGICAL_CANVAS_WIDTH / 2, CANVAS_HEIGHT - 10);
 
-        // Y轴标签（简化）
+        // Y轴标签（恢复完整）
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
-        const yLabels = [{ value: 255, ratio: 0 }, { value: 128, ratio: 0.5 }, { value: 0, ratio: 1 }];
+        const yLabels = [
+          { value: 255, ratio: 0 },
+          { value: 192, ratio: 0.25 },
+          { value: 128, ratio: 0.5 },
+          { value: 64,  ratio: 0.75 },
+          { value: 0,   ratio: 1 }
+        ];
         yLabels.forEach(label => {
           const y = MARGIN_TOP + label.ratio * plotHeight;
           ctx.fillText(label.value.toString(), MARGIN_LEFT - 10, y);
@@ -785,7 +785,7 @@
       });
     }
 
-    // ======== 点击获取频率（辅助调整滤波参数）========
+    // ======== 点击获取频率（辅助调整）========
     function handleCanvasClick(clientX, clientY) {
       if (!analyser || !audioContext) return;
 
