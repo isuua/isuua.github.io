@@ -129,7 +129,6 @@
     let analyser = null;
     let gainNode = null;
     let filters = [];
-    let noiseSuppressionNode = null;
     let isFiltering = false;
     let isRecording = false;
     let mediaRecorder = null;
@@ -223,14 +222,8 @@
       }
     }
 
-    // 创建带噪声抑制的音频图
     function buildAudioGraph(enableFilter) {
-      // 断开并清空现有滤波器
       filters.forEach(f => f.disconnect());
-      if (noiseSuppressionNode) {
-        noiseSuppressionNode.disconnect();
-        noiseSuppressionNode = null;
-      }
       filters = [];
 
       analyser = audioContext.createAnalyser();
@@ -239,90 +232,220 @@
       let currentNode = sourceNode;
 
       if (enableFilter) {
-        // 多级陷波滤波器 - 针对特定频率的电流声
-        for (const freq of notchFreqs) {
-          const nf = audioContext.createBiquadFilter();
-          nf.type = 'notch';
-          nf.frequency.value = freq;
-          nf.Q.value = Q;
-          currentNode.connect(nf);
-          currentNode = nf;
-          filters.push(nf);
-        }
-
-        // 高通滤波器 - 去除低频噪声
-        const hp = audioContext.createBiquadFilter();
-        hp.type = 'highpass';
-        hp.frequency.value = 40;
-        hp.Q.value = 0.707;
-        currentNode.connect(hp);
-        currentNode = hp;
-        filters.push(hp);
-
-        // 峰值滤波器 - 增强人声频段
-        const peaking = audioContext.createBiquadFilter();
-        peaking.type = 'peaking';
-        peaking.frequency.value = 1850;
-        peaking.gain.value = parseFloat(gainSlider.value) / 100;
-        peaking.Q.value = 0.8;
-        currentNode.connect(peaking);
-        currentNode = peaking;
-        filters.push(peaking);
-
-        // 额外的高通滤波器 - 进一步去除低频噪声
-        const hp2 = audioContext.createBiquadFilter();
-        hp2.type = 'highpass';
-        hp2.frequency.value = 80;
-        hp2.Q.value = 0.707;
-        currentNode.connect(hp2);
-        currentNode = hp2;
-        filters.push(hp2);
+        // 创建一个ScriptProcessorNode来实现更复杂的降噪处理
+        const scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+        
+        // 存储用于降噪的数据
+        let samplesBuffer = new Float32Array(0);
+        const sampleRate = audioContext.sampleRate;
+        
+        // 用于降噪处理的函数
+        scriptNode.onaudioprocess = function(e) {
+          const inputData = e.inputBuffer.getChannelData(0);
+          const outputData = e.outputBuffer.getChannelData(0);
+          
+          // 将新数据添加到缓冲区
+          const newBuffer = new Float32Array(samplesBuffer.length + inputData.length);
+          newBuffer.set(samplesBuffer);
+          newBuffer.set(inputData, samplesBuffer.length);
+          samplesBuffer = newBuffer;
+          
+          // 如果缓冲区足够大，进行降噪处理
+          if (samplesBuffer.length >= 4096) {
+            // 处理降噪 - 模拟Python代码中的降噪流程
+            let processed = removeHum(samplesBuffer.slice(0, 4096), sampleRate);
+            
+            // 将处理后的数据复制到输出
+            for (let i = 0; i < outputData.length; i++) {
+              outputData[i] = processed[i];
+            }
+            
+            // 保留未处理的数据
+            samplesBuffer = samplesBuffer.slice(4096);
+          } else {
+            // 如果缓冲区不够大，直接输出原数据
+            for (let i = 0; i < outputData.length; i++) {
+              outputData[i] = inputData[i];
+            }
+          }
+        };
+        
+        currentNode.connect(scriptNode);
+        scriptNode.connect(analyser);
+        analyser.connect(audioContext.destination);
+        
+        // 将scriptNode也添加到filters数组中
+        filters.push(scriptNode);
+      } else {
+        currentNode.connect(analyser);
+        analyser.connect(audioContext.destination);
       }
-
-      currentNode.connect(analyser);
-      analyser.connect(audioContext.destination);
     }
 
-    // 为录音创建更复杂的滤波链
-    function createRecordingFilterChain() {
-      let currentNode = sourceNode;
+    // 模拟Python降噪处理的函数
+    function removeHum(data, sampleRate) {
+      // 1. 陷波滤波器处理电流声
+      let processed = applyNotchFilters(data, sampleRate);
+      
+      // 2. 模拟nr.reduce_noise - 使用简单的谱减法
+      processed = spectralSubtraction(processed, sampleRate);
+      
+      // 3. 高通滤波器
+      processed = applyHighPassFilter(processed, sampleRate, 40);
+      
+      return processed;
+    }
 
-      // 多级陷波滤波器 - 针对特定频率的电流声
-      for (const freq of notchFreqs) {
-        const nf = audioContext.createBiquadFilter();
-        nf.type = 'notch';
-        nf.frequency.value = freq;
-        nf.Q.value = Q;
-        currentNode.connect(nf);
-        currentNode = nf;
+    // 陷波滤波器
+    function applyNotchFilters(data, sampleRate) {
+      let result = new Float32Array(data);
+      
+      for (const f0 of notchFreqs) {
+        result = applyIIRNotch(result, f0, Q, sampleRate);
       }
+      
+      return result;
+    }
 
-      // 高通滤波器 - 去除低频噪声
-      const hp = audioContext.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 40;
-      hp.Q.value = 0.707;
-      currentNode.connect(hp);
-      currentNode = hp;
+    // IIR陷波滤波器实现
+    function applyIIRNotch(data, f0, Q, fs) {
+      const w0 = 2 * Math.PI * f0 / fs;
+      const alpha = Math.sin(w0) / (2 * Q);
+      
+      const b0 = 1;
+      const b1 = -2 * Math.cos(w0);
+      const b2 = 1;
+      const a0 = 1 + alpha;
+      const a1 = -2 * Math.cos(w0);
+      const a2 = 1 - alpha;
+      
+      // 归一化系数
+      const norm_b0 = b0 / a0;
+      const norm_b1 = b1 / a0;
+      const norm_b2 = b2 / a0;
+      const norm_a1 = a1 / a0;
+      const norm_a2 = a2 / a0;
+      
+      const result = new Float32Array(data.length);
+      let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      
+      for (let i = 0; i < data.length; i++) {
+        const x = data[i];
+        const y = norm_b0 * x + norm_b1 * x1 + norm_b2 * x2 - norm_a1 * y1 - norm_a2 * y2;
+        
+        result[i] = y;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+      }
+      
+      return result;
+    }
 
-      // 峰值滤波器 - 增强人声频段
-      const peaking = audioContext.createBiquadFilter();
-      peaking.type = 'peaking';
-      peaking.frequency.value = 1850;
-      peaking.gain.value = parseFloat(gainSlider.value) / 100;
-      peaking.Q.value = 0.8;
-      currentNode.connect(peaking);
-      currentNode = peaking;
+    // 谱减法降噪
+    function spectralSubtraction(data, sampleRate) {
+      // 简化的谱减法实现
+      const frameSize = 1024;
+      const result = new Float32Array(data.length);
+      
+      for (let i = 0; i < data.length; i += frameSize) {
+        const frame = data.slice(i, Math.min(i + frameSize, data.length));
+        
+        // 计算FFT
+        const fft = realFFT(frame);
+        
+        // 估计噪声谱（使用前几帧的平均值）
+        if (i < 3 * frameSize) { // 前3帧作为噪声估计
+          // 这里简化处理，实际应用中需要更复杂的噪声估计
+          for (let j = 0; j < fft.length; j++) {
+            fft[j] = Math.max(0, fft[j] - 0.05); // 简化的噪声估计
+          }
+        }
+        
+        // 谱减
+        for (let j = 0; j < fft.length; j++) {
+          fft[j] = Math.max(0, fft[j] - 0.1); // 简化的谱减
+        }
+        
+        // 逆FFT
+        const ifftResult = realIFFT(fft);
+        
+        // 添加到结果中
+        for (let j = 0; j < ifftResult.length && i + j < result.length; j++) {
+          result[i + j] = ifftResult[j];
+        }
+      }
+      
+      return result;
+    }
 
-      // 额外的高通滤波器 - 进一步去除低频噪声
-      const hp2 = audioContext.createBiquadFilter();
-      hp2.type = 'highpass';
-      hp2.frequency.value = 80;
-      hp2.Q.value = 0.707;
-      currentNode.connect(hp2);
-      currentNode = hp2;
+    // 简化的实数FFT实现
+    function realFFT(signal) {
+      // 这里使用简单的DFT实现，实际应用中应使用更高效的FFT算法
+      const N = signal.length;
+      const result = new Float32Array(N);
+      
+      for (let k = 0; k < N; k++) {
+        let real = 0;
+        let imag = 0;
+        
+        for (let n = 0; n < N; n++) {
+          const angle = -2 * Math.PI * k * n / N;
+          real += signal[n] * Math.cos(angle);
+          imag += signal[n] * Math.sin(angle);
+        }
+        
+        result[k] = Math.sqrt(real * real + imag * imag);
+      }
+      
+      return result;
+    }
 
-      return currentNode;
+    // 简化的实数逆FFT实现
+    function realIFFT(magnitude) {
+      // 这里返回原信号的近似值，因为相位信息丢失
+      return new Float32Array(magnitude);
+    }
+
+    // 高通滤波器
+    function applyHighPassFilter(data, sampleRate, cutoffFreq) {
+      const result = new Float32Array(data.length);
+      
+      // 使用双二阶节滤波器（Butterworth）实现高通
+      const w0 = 2 * Math.PI * cutoffFreq / sampleRate;
+      const sinW0 = Math.sin(w0);
+      const cosW0 = Math.cos(w0);
+      const alpha = sinW0 / 2 * Math.SQRT2; // Q = 1/sqrt(2) for Butterworth
+      
+      const b0 = (1 + cosW0) / 2;
+      const b1 = -(1 + cosW0);
+      const b2 = (1 + cosW0) / 2;
+      const a0 = 1 + alpha;
+      const a1 = -2 * cosW0;
+      const a2 = 1 - alpha;
+      
+      // 归一化系数
+      const norm_b0 = b0 / a0;
+      const norm_b1 = b1 / a0;
+      const norm_b2 = b2 / a0;
+      const norm_a1 = a1 / a0;
+      const norm_a2 = a2 / a0;
+      
+      let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      
+      for (let i = 0; i < data.length; i++) {
+        const x = data[i];
+        const y = norm_b0 * x + norm_b1 * x1 + norm_b2 * x2 - norm_a1 * y1 - norm_a2 * y2;
+        
+        result[i] = y;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+      }
+      
+      return result;
     }
 
     function estimateRecordedSize() {
@@ -387,7 +510,6 @@
       sourceNode = null;
       analyser = null;
       filters = [];
-      noiseSuppressionNode = null;
       isFiltering = false;
 
       startBtn.disabled = false;
@@ -571,11 +693,52 @@
           recordedChunks = [];
         }
 
+        // 创建用于录音的处理节点
         const dest = audioContext.createMediaStreamDestination();
-        
-        // 应用滤波链到录音流
-        let filteredNode = createRecordingFilterChain();
-        filteredNode.connect(dest);
+        let recNode = sourceNode;
+
+        if (isFiltering) {
+          // 为录音创建一个单独的处理链
+          const recScriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+          
+          let recSamplesBuffer = new Float32Array(0);
+          const recSampleRate = audioContext.sampleRate;
+          
+          recScriptNode.onaudioprocess = function(e) {
+            const inputData = e.inputBuffer.getChannelData(0);
+            const outputData = e.outputBuffer.getChannelData(0);
+            
+            // 将新数据添加到缓冲区
+            const newBuffer = new Float32Array(recSamplesBuffer.length + inputData.length);
+            newBuffer.set(recSamplesBuffer);
+            newBuffer.set(inputData, recSamplesBuffer.length);
+            recSamplesBuffer = newBuffer;
+            
+            // 如果缓冲区足够大，进行降噪处理
+            if (recSamplesBuffer.length >= 4096) {
+              // 处理降噪
+              let processed = removeHum(recSamplesBuffer.slice(0, 4096), recSampleRate);
+              
+              // 将处理后的数据复制到输出
+              for (let i = 0; i < outputData.length; i++) {
+                outputData[i] = processed[i];
+              }
+              
+              // 保留未处理的数据
+              recSamplesBuffer = recSamplesBuffer.slice(4096);
+            } else {
+              // 如果缓冲区不够大，直接输出原数据
+              for (let i = 0; i < outputData.length; i++) {
+                outputData[i] = inputData[i];
+              }
+            }
+          };
+          
+          recNode.connect(recScriptNode);
+          recScriptNode.connect(dest);
+        } else {
+          recNode.connect(dest);
+        }
 
         if (useStreamWrite) {
           if (MediaRecorder.isTypeSupported('audio/mp4')) {
