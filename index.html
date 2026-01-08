@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>实时音频滤波与增强（流式M4A录音）</title>
+  <title>录音机</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, sans-serif;
@@ -21,7 +21,7 @@
       justify-content: center;
       align-items: center;
     }
-    button, select {
+    button, select, input[type="number"] {
       padding: 10px 12px;
       border: none;
       border-radius: 6px;
@@ -30,9 +30,14 @@
       cursor: pointer;
       font-size: 14px;
     }
-    select {
+    select, input[type="number"] {
       background: #333;
       min-width: 180px;
+    }
+    input[type="number"] {
+      width: auto;
+      min-width: 60px;
+      text-align: center;
     }
     button:hover { background: #555; }
     button:disabled { background: #333; color: #777; cursor: not-allowed; }
@@ -91,6 +96,11 @@
       <input type="range" id="gainSlider" min="0" max="300" value="150" />
       <span id="gainValue">1.5x</span>
     </div>
+
+    <div class="slider-container">
+      <label title="0 = 自动内存保护（推荐）">最大时长(秒):</label>
+      <input type="number" id="maxDurationInput" min="0" max="7200" value="0" style="width:60px; background:#333; color:white; text-align:center;" />
+    </div>
   </div>
 
   <canvas id="fftCanvas"></canvas>
@@ -116,8 +126,13 @@
     let writableStream = null;
     let writer = null;
 
-    const notchFreqs = [50, 100, 150, 200, 250];
+    // === 录音保护配置 ===
+    let recordingStartTime = null;
+    let memoryGuardTimer = null;
+
+    const notchFreqs = [50, 95, 100, 150, 200, 250, 285, 350, 450, 550, 650, 850, 950];
     const Q = 35;
+    const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024; // 80MB
 
     // ================= DOM =================
     const startBtn = document.getElementById('startBtn');
@@ -227,10 +242,56 @@
       analyser.connect(audioContext.destination);
     }
 
+    function estimateRecordedSize() {
+      if (!recordedChunks.length) return 0;
+      return recordedChunks.reduce((total, chunk) => total + chunk.size, 0);
+    }
+
+    // ✅ 核心：超时后调用 stopRecording(true)，行为一致
+    function checkMemoryPressure() {
+      if (!isRecording || !recordingStartTime) return;
+
+      const maxDurationInput = document.getElementById('maxDurationInput');
+      const maxDurationSeconds = parseInt(maxDurationInput?.value) || 0;
+
+      if (maxDurationSeconds > 0) {
+        const elapsedSeconds = (Date.now() - recordingStartTime) / 1000;
+        if (elapsedSeconds >= maxDurationSeconds) {
+          console.log(`[Auto Stop] Reached max duration: ${maxDurationSeconds}s`);
+          stopRecording(true);
+          return;
+        }
+      }
+
+      if (maxDurationSeconds === 0 && !fileHandle) {
+        const estimated = estimateRecordedSize();
+        if (estimated > MAX_ESTIMATED_MEMORY_BYTES * 0.9) {
+          console.warn(`[Auto Stop] Memory limit reached: ${(estimated / 1024 / 1024).toFixed(1)}MB`);
+          stopRecording(true);
+        }
+      }
+    }
+
+    function clearGuardTimer() {
+      if (memoryGuardTimer) {
+        clearInterval(memoryGuardTimer);
+        memoryGuardTimer = null;
+      }
+    }
+
+    // ✅ 新增：生成标准文件名
+    function generateFilename() {
+      const now = new Date();
+      const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      return `recording_${timestamp}.m4a`;
+    }
+
     // ================= 停止所有音频资源 =================
     async function stopAllAudio() {
+      clearGuardTimer();
+
       if (isRecording) {
-        await stopRecording(true); // 确保异步完成
+        await stopRecording(false); // 不保存
       }
 
       if (stream) {
@@ -266,40 +327,45 @@
       if (!isRecording) return;
 
       isRecording = false;
+      recordingStartTime = null;
+      clearGuardTimer();
 
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
       }
 
-      // 关闭流（如果正在流式写入）
+      let filename = generateFilename();
+      let mimeType = 'audio/mp4';
+
+      // 确定 MIME 类型
+      if (!MediaRecorder.isTypeSupported('audio/mp4')) {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+          filename = filename.replace('.m4a', '.webm');
+        } else {
+          mimeType = 'audio/webm';
+          filename = filename.replace('.m4a', '.webm');
+        }
+      }
+
+      // 处理流式写入
       if (writer) {
         try {
           await writer.close();
+          if (save) {
+            log(`✅ 录音已保存为: ${filename}`);
+          }
         } catch (e) {
           console.warn('Writer close error:', e);
+          if (save) log('⚠️ 文件写入未完成');
         }
         writer = null;
         writableStream = null;
         fileHandle = null;
       }
 
-      // 如果是传统模式（非流式），且需要保存
+      // 处理内存模式
       if (save && recordedChunks.length > 0 && !fileHandle) {
-        const now = new Date();
-        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        let filename = `recording_${timestamp}.m4a`;
-        let mimeType = 'audio/mp4';
-
-        if (!MediaRecorder.isTypeSupported('audio/mp4')) {
-          if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-            mimeType = 'audio/webm;codecs=opus';
-            filename = filename.replace('.m4a', '.webm');
-          } else {
-            mimeType = 'audio/webm';
-            filename = filename.replace('.m4a', '.webm');
-          }
-        }
-
         const blob = new Blob(recordedChunks, { type: mimeType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -356,7 +422,6 @@
       }
     };
 
-    // 新增：关闭按钮
     stopBtn.onclick = () => {
       stopAllAudio();
     };
@@ -387,7 +452,7 @@
       }
     };
 
-    // ================= 开始录音（核心逻辑）=================
+    // ================= 开始录音 =================
     recordBtn.onclick = async () => {
       if (isRecording) {
         await stopRecording(true);
@@ -395,16 +460,14 @@
       }
 
       try {
-        // === 第一步：尝试流式保存（弹出保存对话框）===
         let useStreamWrite = false;
         let mimeType = 'audio/mp4';
 
         if ('showSaveFilePicker' in window) {
           try {
-            const now = new Date();
-            const timestamp = now.toISOString().slice(0,19).replace(/:/g, '-');
+            const filename = generateFilename();
             fileHandle = await window.showSaveFilePicker({
-              suggestedName: `recording_${timestamp}.m4a`,
+              suggestedName: filename,
               types: [{
                 description: '音频文件',
                 accept: {
@@ -422,7 +485,6 @@
           }
         }
 
-        // 如果无法流式写入，降级到传统模式
         if (!useStreamWrite) {
           if (!MediaRecorder.isTypeSupported('audio/mp4')) {
             if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
@@ -434,7 +496,6 @@
           recordedChunks = [];
         }
 
-        // === 第二步：构建录制音频图 ===
         const dest = audioContext.createMediaStreamDestination();
         let recNode = sourceNode;
 
@@ -463,7 +524,6 @@
         }
         recNode.connect(dest);
 
-        // === 第三步：创建 MediaRecorder ===
         if (useStreamWrite) {
           if (MediaRecorder.isTypeSupported('audio/mp4')) {
             mimeType = 'audio/mp4';
@@ -502,13 +562,19 @@
           stopRecording(false);
         };
 
-        mediaRecorder.start(100); // 每100ms触发一次，实现低延迟流式
+        mediaRecorder.start(100);
+
+        recordingStartTime = Date.now();
+        clearGuardTimer();
+        memoryGuardTimer = setInterval(checkMemoryPressure, 500);
 
         isRecording = true;
         recordBtn.textContent = "停止录音";
         recordBtn.classList.add('active');
 
-        const mode = useStreamWrite ? '（流式写入）' : '（内存缓存）';
+        const mode = useStreamWrite 
+          ? '（流式写入）' 
+          : '（内存缓存 · 自动保护）';
         log("🎙️ 录音已开始" + mode);
 
       } catch (err) {
@@ -537,7 +603,6 @@
       requestAnimationFrame(drawFFT);
     }
 
-    // 初始化设备列表
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then(stream => {
         stream.getTracks().forEach(track => track.stop());
