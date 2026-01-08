@@ -44,7 +44,6 @@
     button.active { background: #1e88e5; }
     button.danger { background: #d32f2f; }
 
-    /* 新增：包裹 canvas 的可滚动容器 */
     .canvas-container {
       width: 100%;
       overflow-x: auto;
@@ -57,7 +56,6 @@
       background: #000;
       display: block;
       cursor: pointer;
-      /* 逻辑宽度拉长以支持全频段细节 */
       width: 3000px;
       min-width: 3000px;
     }
@@ -104,9 +102,9 @@
     <button id="recordBtn" disabled>开始录音</button>
     
     <div class="slider-container">
-      <label>人声增益:</label>
+      <label>人声增强:</label>
       <input type="range" id="gainSlider" min="0" max="300" value="150" />
-      <span id="gainValue">1.5x</span>
+      <span id="gainValue">30 dB</span>
     </div>
 
     <div class="slider-container">
@@ -115,7 +113,6 @@
     </div>
   </div>
 
-  <!-- 新增容器 -->
   <div class="canvas-container">
     <canvas id="fftCanvas"></canvas>
   </div>
@@ -127,7 +124,6 @@
     let sourceNode = null;
     let stream = null;
     let analyser = null;
-    let gainNode = null;
     let filters = [];
     let isFiltering = false;
     let isRecording = false;
@@ -143,8 +139,11 @@
     let recordingStartTime = null;
     let memoryGuardTimer = null;
 
-    const notchFreqs = [50, 95, 100, 150, 200, 250, 285, 350, 450, 550, 650, 850, 950];
-    const Q = 35;
+    // === 滤波参数优化 ===
+    const is60HzRegion = false; // 若你在北美/日本等60Hz电网地区，请设为 true
+    const baseFreq = is60HzRegion ? 60 : 50;
+    const notchFreqs = [baseFreq, baseFreq * 2, baseFreq * 3, baseFreq * 4, baseFreq * 5]; // 50,100,150,200,250 (或 60,120,...)
+    const Q = 15; // 原为35，现降低以提高鲁棒性
     const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
 
     // ================= DOM =================
@@ -165,14 +164,11 @@
       logEl.textContent = msg;
     }
 
-    // === 边距调整：底部留足空间给标签 ===
     const MARGIN_LEFT = 60;
-    const MARGIN_BOTTOM = 50; // 增大底部边距
+    const MARGIN_BOTTOM = 50;
     const MARGIN_RIGHT = 20;
     const MARGIN_TOP = 10;
-
-    // 逻辑绘图宽度（固定，用于全频段展开）
-    const LOGICAL_CANVAS_WIDTH = 3000; // 与 CSS 中 canvas width 一致
+    const LOGICAL_CANVAS_WIDTH = 3000;
     const CANVAS_HEIGHT = 280;
 
     function resizeCanvas() {
@@ -222,6 +218,7 @@
       }
     }
 
+    // === 构建音频处理图 ===
     function buildAudioGraph(enableFilter) {
       filters.forEach(f => f.disconnect());
       filters = [];
@@ -232,6 +229,7 @@
       let currentNode = sourceNode;
 
       if (enableFilter) {
+        // 陷波滤波器：去除50/60Hz及其谐波
         for (const freq of notchFreqs) {
           const nf = audioContext.createBiquadFilter();
           nf.type = 'notch';
@@ -242,21 +240,37 @@
           filters.push(nf);
         }
 
+        // 高通滤波：切掉80Hz以下无用低频
         const hp = audioContext.createBiquadFilter();
         hp.type = 'highpass';
-        hp.frequency.value = 40;
+        hp.frequency.value = 80;
         currentNode.connect(hp);
         currentNode = hp;
         filters.push(hp);
 
-        const bp = audioContext.createBiquadFilter();
-        bp.type = 'peaking';
-        bp.frequency.value = 1850;
-        bp.gain.value = parseFloat(gainSlider.value) / 100;
-        bp.Q.value = 0.8;
-        currentNode.connect(bp);
-        currentNode = bp;
-        filters.push(bp);
+        // 人声增强：双段均衡
+        const gainLinear = parseFloat(gainSlider.value) / 100; // 0 ～ 3
+        if (gainLinear > 0.1) {
+          // 清晰度提升 (1.8kHz)
+          const boost1 = audioContext.createBiquadFilter();
+          boost1.type = 'peaking';
+          boost1.frequency.value = 1800;
+          boost1.gain.value = gainLinear * 6; // 最大 +18dB
+          boost1.Q.value = 1.0;
+          currentNode.connect(boost1);
+          currentNode = boost1;
+          filters.push(boost1);
+
+          // 温暖感提升 (600Hz)
+          const boost2 = audioContext.createBiquadFilter();
+          boost2.type = 'peaking';
+          boost2.frequency.value = 600;
+          boost2.gain.value = gainLinear * 3; // 最大 +9dB
+          boost2.Q.value = 0.7;
+          currentNode.connect(boost2);
+          currentNode = boost2;
+          filters.push(boost2);
+        }
       }
 
       currentNode.connect(analyser);
@@ -458,8 +472,8 @@
     };
 
     gainSlider.oninput = () => {
-      const g = gainSlider.value / 100;
-      gainValue.textContent = g.toFixed(1) + 'x';
+      const db = (parseFloat(gainSlider.value) / 100 * 20).toFixed(0);
+      gainValue.textContent = `${db} dB`;
       if (isFiltering && audioContext) {
         buildAudioGraph(true);
       }
@@ -511,6 +525,7 @@
         const dest = audioContext.createMediaStreamDestination();
         let recNode = sourceNode;
 
+        // === 录音路径：复用相同的滤波逻辑 ===
         if (isFiltering) {
           for (const freq of notchFreqs) {
             const nf = audioContext.createBiquadFilter();
@@ -520,19 +535,31 @@
             recNode.connect(nf);
             recNode = nf;
           }
+
           const hp = audioContext.createBiquadFilter();
           hp.type = 'highpass';
-          hp.frequency.value = 40;
+          hp.frequency.value = 80;
           recNode.connect(hp);
           recNode = hp;
 
-          const bp = audioContext.createBiquadFilter();
-          bp.type = 'peaking';
-          bp.frequency.value = 1850;
-          bp.gain.value = parseFloat(gainSlider.value) / 100;
-          bp.Q.value = 0.8;
-          recNode.connect(bp);
-          recNode = bp;
+          const gainLinear = parseFloat(gainSlider.value) / 100;
+          if (gainLinear > 0.1) {
+            const boost1 = audioContext.createBiquadFilter();
+            boost1.type = 'peaking';
+            boost1.frequency.value = 1800;
+            boost1.gain.value = gainLinear * 6;
+            boost1.Q.value = 1.0;
+            recNode.connect(boost1);
+            recNode = boost1;
+
+            const boost2 = audioContext.createBiquadFilter();
+            boost2.type = 'peaking';
+            boost2.frequency.value = 600;
+            boost2.gain.value = gainLinear * 3;
+            boost2.Q.value = 0.7;
+            recNode.connect(boost2);
+            recNode = boost2;
+          }
         }
         recNode.connect(dest);
 
@@ -603,7 +630,6 @@
       const canvasRect = canvas.getBoundingClientRect();
       const scrollLeft = document.querySelector('.canvas-container').scrollLeft;
 
-      // 计算相对于 canvas 逻辑坐标的 x
       const x = clientX - canvasRect.left + scrollLeft;
       const plotWidth = LOGICAL_CANVAS_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
 
@@ -625,10 +651,10 @@
       }
     }, { passive: false });
 
-    // ======== 优化后的 drawFFT ========
+    // ======== 绘制频谱 ========
     function drawFFT() {
       if (!analyser) return;
-      const bufferLength = analyser.frequencyBinCount; // 512
+      const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
 
       const width = LOGICAL_CANVAS_WIDTH;
@@ -641,7 +667,6 @@
 
       analyser.getByteFrequencyData(dataArray);
 
-      // 绘制频谱柱状图
       const barWidth = plotWidth / bufferLength;
       for (let i = 0; i < bufferLength; i++) {
         const barHeight = (dataArray[i] / 255) * plotHeight;
@@ -651,7 +676,7 @@
         ctx.fillRect(x, y, barWidth - 1, barHeight);
       }
 
-      // ====== X 轴标签（底部）======
+      // X 轴标签
       ctx.fillStyle = '#aaa';
       ctx.font = '12px sans-serif';
       ctx.textAlign = 'center';
@@ -660,12 +685,10 @@
       const sampleRate = audioContext ? audioContext.sampleRate : 44100;
       const nyquist = sampleRate / 2;
 
-      // 使用线性分布的合理刻度（覆盖 0～20k+）
       const xLabels = [];
       for (let f = 0; f <= 22000; f += 2000) {
         xLabels.push({ freq: f, ratio: f / nyquist });
       }
-      // 确保包含 Nyquist
       if (nyquist > 22000) {
         xLabels.push({ freq: Math.round(nyquist), ratio: 1 });
       }
@@ -683,7 +706,7 @@
       });
       ctx.fillText('频率 (Hz)', width / 2, height - 10);
 
-      // ====== Y 轴标签（左侧）======
+      // Y 轴标签
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       const yLabels = [
@@ -713,6 +736,7 @@
       requestAnimationFrame(drawFFT);
     }
 
+    // 初始化设备列表
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then(stream => {
         stream.getTracks().forEach(track => track.stop());
