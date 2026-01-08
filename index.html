@@ -83,6 +83,12 @@
       justify-content: center;
       margin: 15px 0;
     }
+    /* 新增：底噪门限调节滑块样式 */
+    .noise-gate-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
   </style>
 </head>
 <body>
@@ -100,13 +106,20 @@
   <div class="controls">
     <button id="startBtn">开始音频</button>
     <button id="stopBtn" disabled class="danger">关闭音频</button>
-    <button id="filterBtn" disabled>启用滤波</button>
+    <button id="filterBtn" disabled>启用降噪</button>
     <button id="recordBtn" disabled>开始录音</button>
     
     <div class="slider-container">
       <label>人声增益:</label>
       <input type="range" id="gainSlider" min="0" max="300" value="150" />
       <span id="gainValue">1.5x</span>
+    </div>
+
+    <!-- 新增：底噪门限调节 -->
+    <div class="noise-gate-container">
+      <label title="低于该值的声音会被静音（抑制沙沙声）">底噪门限:</label>
+      <input type="range" id="noiseGateSlider" min="0" max="50" value="10" />
+      <span id="noiseGateValue">10</span>
     </div>
 
     <div class="slider-container">
@@ -143,22 +156,14 @@
     let recordingStartTime = null;
     let memoryGuardTimer = null;
 
-    // ========== 电流声降噪核心配置 ==========
+    // ========== 降噪核心配置（优化版）==========
     const POWER_FREQ = 50; // 工频频率（中国大陆50Hz，欧美60Hz可修改）
-    // 电流声核心频率：基波 + 2-6次谐波（覆盖99%的电流声来源）
-    const notchFreqs = [
-        POWER_FREQ,        // 50Hz 基波（电流声主频率）
-        POWER_FREQ * 2,    // 100Hz 2次谐波
-        POWER_FREQ * 3,    // 150Hz 3次谐波
-        POWER_FREQ * 4,    // 200Hz 4次谐波
-        POWER_FREQ * 5,    // 250Hz 5次谐波
-        POWER_FREQ * 6     // 300Hz 6次谐波
-    ];
-    // Q值配置：基波用更高Q值（精准抑制），谐波用稍低Q值（平衡降噪与音质）
-    const Q_BASE = 50;    // 基波陷波Q值
-    const Q_HARMONIC = 30;// 谐波陷波Q值
-    const HPF_FREQ = 55;  // 高通滤波频率（避开50Hz基波，过滤低频噪声）
-    // ========== 降噪配置结束 ==========
+    const notchFreqs = [POWER_FREQ, POWER_FREQ*2, POWER_FREQ*3, POWER_FREQ*4, POWER_FREQ*5, POWER_FREQ*6];
+    const Q_BASE = 40;     // 基波Q值（降低Q值避免过度滤波）
+    const Q_HARMONIC = 25; // 谐波Q值
+    const HPF_FREQ = 60;   // 高通频率（避开50Hz基波，过滤低频底噪）
+    const LPF_FREQ = 18000;// 低通频率（过滤20k以上高频沙沙声）
+    let noiseGateThreshold = 10; // 底噪门限（初始值）
 
     const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
 
@@ -174,6 +179,9 @@
     const logEl = document.getElementById('log');
     const inputSelect = document.getElementById('inputSelect');
     const outputSelect = document.getElementById('outputSelect');
+    // 新增底噪门限DOM
+    const noiseGateSlider = document.getElementById('noiseGateSlider');
+    const noiseGateValue = document.getElementById('noiseGateValue');
 
     function log(msg) {
       console.log(msg);
@@ -182,12 +190,10 @@
 
     // === 边距调整：底部留足空间给标签 ===
     const MARGIN_LEFT = 60;
-    const MARGIN_BOTTOM = 50; // 增大底部边距
+    const MARGIN_BOTTOM = 50;
     const MARGIN_RIGHT = 20;
     const MARGIN_TOP = 10;
-
-    // 逻辑绘图宽度（固定，用于全频段展开）
-    const LOGICAL_CANVAS_WIDTH = 3000; // 与 CSS 中 canvas width 一致
+    const LOGICAL_CANVAS_WIDTH = 3000;
     const CANVAS_HEIGHT = 280;
 
     function resizeCanvas() {
@@ -237,76 +243,128 @@
       }
     }
 
-    // ========== 统一的电流声降噪滤波创建函数 ==========
-    // 作用：创建针对50Hz电流声优化的滤波链，同时用于实时监听和录音
-    // 参数：inputNode - 输入音频节点
-    // 返回：滤波链的最后一个节点
-    function createCurrentNoiseFilterChain(inputNode) {
-        if (!audioContext) return inputNode;
-        // 清空之前的滤波器
-        filters.forEach(filter => filter.disconnect());
-        filters = [];
+    // ========== 优化的降噪滤波链（分离监听/录音）==========
+    // 用于监听的滤波链（保留输出）
+    function createPlaybackNoiseFilterChain(inputNode) {
+      if (!audioContext) return inputNode;
+      
+      let currentNode = inputNode;
+      // 1. 噪声门：抑制低音量底噪（核心解决沙沙声）
+      const noiseGate = audioContext.createGain();
+      // 实时检测音量，低于门限则静音
+      const processor = audioContext.createScriptProcessor(1024, 1, 1);
+      processor.onaudioprocess = function(e) {
+        const input = e.inputBuffer.getChannelData(0);
+        const output = e.outputBuffer.getChannelData(0);
+        let sum = 0;
+        for (let i = 0; i < input.length; i++) sum += Math.abs(input[i]);
+        const rms = Math.sqrt(sum / input.length); // 均方根音量
+        const threshold = noiseGateThreshold / 100; // 转换为0-1范围
+        noiseGate.gain.value = rms > threshold ? 1 : 0; // 低于门限则静音
+      };
+      currentNode.connect(processor);
+      processor.connect(noiseGate);
+      currentNode = noiseGate;
+      filters.push(processor, noiseGate);
 
-        let currentNode = inputNode;
+      // 2. 陷波滤波：抑制50Hz电流声
+      notchFreqs.forEach((freq, index) => {
+        const notch = audioContext.createBiquadFilter();
+        notch.type = 'notch';
+        notch.frequency.value = freq;
+        notch.Q.value = index === 0 ? Q_BASE : Q_HARMONIC;
+        currentNode.connect(notch);
+        currentNode = notch;
+        filters.push(notch);
+      });
 
-        // 1. 陷波滤波：逐个抑制电流声的基波和谐波
-        notchFreqs.forEach((freq, index) => {
-            const notch = audioContext.createBiquadFilter();
-            notch.type = 'notch'; // 陷波滤波器：精准衰减特定频率
-            notch.frequency.value = freq;
-            // 基波（第一个频率）使用更高的Q值，谐波使用稍低的Q值
-            notch.Q.value = index === 0 ? Q_BASE : Q_HARMONIC;
-            currentNode.connect(notch);
-            currentNode = notch;
-            filters.push(notch);
-        });
+      // 3. 高通+低通：过滤高低频底噪
+      const highpass = audioContext.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = HPF_FREQ;
+      highpass.Q.value = 0.5; // 更平滑的过渡
+      currentNode.connect(highpass);
+      currentNode = highpass;
+      filters.push(highpass);
 
-        // 2. 高通滤波：过滤55Hz以下的低频噪声（彻底避开50Hz基波）
-        const highpass = audioContext.createBiquadFilter();
-        highpass.type = 'highpass';
-        highpass.frequency.value = HPF_FREQ;
-        highpass.Q.value = 0.7; // 平滑过渡，减少音质失真
-        currentNode.connect(highpass);
-        currentNode = highpass;
-        filters.push(highpass);
+      const lowpass = audioContext.createBiquadFilter();
+      lowpass.type = 'lowpass';
+      lowpass.frequency.value = LPF_FREQ;
+      lowpass.Q.value = 0.7;
+      currentNode.connect(lowpass);
+      currentNode = lowpass;
+      filters.push(lowpass);
 
-        // 3. 人声增益补偿（保留原逻辑：1850Hz是人声核心频段）
-        const peaking = audioContext.createBiquadFilter();
-        peaking.type = 'peaking';
-        peaking.frequency.value = 1850;
-        peaking.gain.value = parseFloat(gainSlider.value) / 100;
-        peaking.Q.value = 0.8;
-        currentNode.connect(peaking);
-        currentNode = peaking;
-        filters.push(peaking);
+      // 4. 人声增益（避免过度放大底噪）
+      const gain = audioContext.createGain();
+      gain.gain.value = parseFloat(gainSlider.value) / 100;
+      currentNode.connect(gain);
+      currentNode = gain;
+      filters.push(gain);
 
-        return currentNode;
+      return currentNode;
+    }
+
+    // 用于录音的滤波链（与监听逻辑一致，保证效果同步）
+    function createRecordNoiseFilterChain(inputNode) {
+      if (!audioContext) return inputNode;
+      let currentNode = inputNode;
+
+      // 复用降噪逻辑（但不创建新的processor，避免重复检测）
+      const noiseGate = audioContext.createGain();
+      noiseGate.gain.value = 1; // 监听侧已做噪声门，这里仅保持增益
+      currentNode.connect(noiseGate);
+      currentNode = noiseGate;
+
+      // 陷波滤波
+      notchFreqs.forEach((freq, index) => {
+        const notch = audioContext.createBiquadFilter();
+        notch.type = 'notch';
+        notch.frequency.value = freq;
+        notch.Q.value = index === 0 ? Q_BASE : Q_HARMONIC;
+        currentNode.connect(notch);
+        currentNode = notch;
+      });
+
+      // 高低通滤波
+      const highpass = audioContext.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = HPF_FREQ;
+      highpass.Q.value = 0.5;
+      currentNode.connect(highpass);
+      currentNode = highpass;
+
+      const lowpass = audioContext.createBiquadFilter();
+      lowpass.type = 'lowpass';
+      lowpass.frequency.value = LPF_FREQ;
+      lowpass.Q.value = 0.7;
+      currentNode.connect(lowpass);
+      currentNode = lowpass;
+
+      // 人声增益
+      const gain = audioContext.createGain();
+      gain.gain.value = parseFloat(gainSlider.value) / 100;
+      currentNode.connect(gain);
+      currentNode = gain;
+
+      return currentNode;
     }
 
     function buildAudioGraph(enableFilter) {
-        // 清空之前的分析器
-        if (analyser) {
-            analyser.disconnect();
-            analyser = null;
-        }
-        // 清空之前的滤波器
-        filters.forEach(filter => filter.disconnect());
-        filters = [];
+      if (analyser) analyser.disconnect();
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
 
-        // 创建分析器（用于频谱绘制）
-        analyser = audioContext.createAnalyser();
-        analyser.fftSize = 1024;
+      let currentNode = sourceNode;
 
-        let currentNode = sourceNode;
+      // 启用降噪时构建滤波链，但保留输出路径
+      if (enableFilter) {
+        currentNode = createPlaybackNoiseFilterChain(currentNode);
+      }
 
-        // 启用滤波时，创建电流声降噪滤波链
-        if (enableFilter) {
-            currentNode = createCurrentNoiseFilterChain(currentNode);
-        }
-
-        // 连接分析器和输出（扬声器）
-        currentNode.connect(analyser);
-        analyser.connect(audioContext.destination);
+      // 关键修复：确保监听音频始终连接到扬声器和分析器
+      currentNode.connect(analyser);
+      analyser.connect(audioContext.destination);
     }
 
     function estimateRecordedSize() {
@@ -370,6 +428,7 @@
 
       sourceNode = null;
       analyser = null;
+      filters.forEach(filter => filter.disconnect());
       filters = [];
       isFiltering = false;
 
@@ -378,7 +437,7 @@
       stopBtn.disabled = true;
       filterBtn.disabled = true;
       filterBtn.classList.remove('active');
-      filterBtn.textContent = "启用滤波";
+      filterBtn.textContent = "启用降噪";
       recordBtn.disabled = true;
       recordBtn.classList.remove('active');
       recordBtn.textContent = "开始录音";
@@ -499,16 +558,24 @@
     filterBtn.onclick = () => {
       isFiltering = !isFiltering;
       filterBtn.classList.toggle('active', isFiltering);
-      filterBtn.textContent = isFiltering ? "关闭滤波" : "启用滤波";
+      filterBtn.textContent = isFiltering ? "关闭降噪" : "启用降噪";
       if (audioContext) buildAudioGraph(isFiltering);
     };
 
+    // 人声增益调整
     gainSlider.oninput = () => {
       const g = gainSlider.value / 100;
       gainValue.textContent = g.toFixed(1) + 'x';
       if (isFiltering && audioContext) {
         buildAudioGraph(true);
       }
+    };
+
+    // 新增：底噪门限调整
+    noiseGateSlider.oninput = () => {
+      noiseGateThreshold = parseInt(noiseGateSlider.value);
+      noiseGateValue.textContent = noiseGateThreshold;
+      log(`🔧 底噪门限已调整为: ${noiseGateThreshold}`);
     };
 
     recordBtn.onclick = async () => {
@@ -557,11 +624,14 @@
         const dest = audioContext.createMediaStreamDestination();
         let recNode = sourceNode;
 
-        // 启用滤波时，复用统一的电流声降噪滤波链（保证监听和录音降噪效果一致）
+        // 关键修复：录音时复用降噪逻辑，但保留监听输出
         if (isFiltering) {
-            recNode = createCurrentNoiseFilterChain(recNode);
+          recNode = createRecordNoiseFilterChain(recNode);
         }
         recNode.connect(dest);
+
+        // 确保录音时监听声音仍能输出（核心修复点）
+        recNode.connect(audioContext.destination);
 
         if (useStreamWrite) {
           if (MediaRecorder.isTypeSupported('audio/mp4')) {
@@ -630,7 +700,6 @@
       const canvasRect = canvas.getBoundingClientRect();
       const scrollLeft = document.querySelector('.canvas-container').scrollLeft;
 
-      // 计算相对于 canvas 逻辑坐标的 x
       const x = clientX - canvasRect.left + scrollLeft;
       const plotWidth = LOGICAL_CANVAS_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
 
@@ -655,7 +724,7 @@
     // ======== 优化后的 drawFFT ========
     function drawFFT() {
       if (!analyser) return;
-      const bufferLength = analyser.frequencyBinCount; // 512
+      const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
 
       const width = LOGICAL_CANVAS_WIDTH;
@@ -687,12 +756,10 @@
       const sampleRate = audioContext ? audioContext.sampleRate : 44100;
       const nyquist = sampleRate / 2;
 
-      // 使用线性分布的合理刻度（覆盖 0～20k+）
       const xLabels = [];
       for (let f = 0; f <= 22000; f += 2000) {
         xLabels.push({ freq: f, ratio: f / nyquist });
       }
-      // 确保包含 Nyquist
       if (nyquist > 22000) {
         xLabels.push({ freq: Math.round(nyquist), ratio: 1 });
       }
