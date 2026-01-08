@@ -43,13 +43,25 @@
     button:disabled { background: #333; color: #777; cursor: not-allowed; }
     button.active { background: #1e88e5; }
     button.danger { background: #d32f2f; }
-    canvas {
+
+    /* 新增：包裹 canvas 的可滚动容器 */
+    .canvas-container {
       width: 100%;
-      height: 250px;
-      background: #000;
+      overflow-x: auto;
+      overflow-y: hidden;
       border-radius: 8px;
-      display: block;
+      margin-top: 10px;
     }
+    canvas {
+      height: 280px;
+      background: #000;
+      display: block;
+      cursor: pointer;
+      /* 逻辑宽度拉长以支持全频段细节 */
+      width: 3000px;
+      min-width: 3000px;
+    }
+
     .slider-container {
       display: flex;
       align-items: center;
@@ -74,7 +86,7 @@
   </style>
 </head>
 <body>
-  <h2>🎤 实时音频滤波与增强（流式M4A录音）</h2>
+  <h2>🎤 录音机</h2>
 
   <div class="device-selectors">
     <select id="inputSelect" disabled>
@@ -103,7 +115,10 @@
     </div>
   </div>
 
-  <canvas id="fftCanvas"></canvas>
+  <!-- 新增容器 -->
+  <div class="canvas-container">
+    <canvas id="fftCanvas"></canvas>
+  </div>
   <div id="log"></div>
 
   <script>
@@ -117,22 +132,20 @@
     let isFiltering = false;
     let isRecording = false;
     let mediaRecorder = null;
-    let recordedChunks = []; // 仅用于降级模式
+    let recordedChunks = [];
     let currentInputDeviceId = localStorage.getItem('audioInputDeviceId') || 'default';
     let currentOutputDeviceId = localStorage.getItem('audioOutputDeviceId') || 'default';
 
-    // 流式写入相关
     let fileHandle = null;
     let writableStream = null;
     let writer = null;
 
-    // === 录音保护配置 ===
     let recordingStartTime = null;
     let memoryGuardTimer = null;
 
     const notchFreqs = [50, 95, 100, 150, 200, 250, 285, 350, 450, 550, 650, 850, 950];
     const Q = 35;
-    const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024; // 80MB
+    const MAX_ESTIMATED_MEMORY_BYTES = 80 * 1024 * 1024;
 
     // ================= DOM =================
     const startBtn = document.getElementById('startBtn');
@@ -152,11 +165,20 @@
       logEl.textContent = msg;
     }
 
+    // === 边距调整：底部留足空间给标签 ===
+    const MARGIN_LEFT = 60;
+    const MARGIN_BOTTOM = 50; // 增大底部边距
+    const MARGIN_RIGHT = 20;
+    const MARGIN_TOP = 10;
+
+    // 逻辑绘图宽度（固定，用于全频段展开）
+    const LOGICAL_CANVAS_WIDTH = 3000; // 与 CSS 中 canvas width 一致
+    const CANVAS_HEIGHT = 280;
+
     function resizeCanvas() {
       const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
+      canvas.width = LOGICAL_CANVAS_WIDTH * dpr;
+      canvas.height = CANVAS_HEIGHT * dpr;
       ctx.scale(dpr, dpr);
     }
     window.addEventListener('resize', resizeCanvas);
@@ -200,7 +222,6 @@
       }
     }
 
-    // ================= 构建音频图 =================
     function buildAudioGraph(enableFilter) {
       filters.forEach(f => f.disconnect());
       filters = [];
@@ -247,7 +268,6 @@
       return recordedChunks.reduce((total, chunk) => total + chunk.size, 0);
     }
 
-    // ✅ 核心：超时后调用 stopRecording(true)，行为一致
     function checkMemoryPressure() {
       if (!isRecording || !recordingStartTime) return;
 
@@ -279,19 +299,17 @@
       }
     }
 
-    // ✅ 新增：生成标准文件名
     function generateFilename() {
       const now = new Date();
       const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
       return `recording_${timestamp}.m4a`;
     }
 
-    // ================= 停止所有音频资源 =================
     async function stopAllAudio() {
       clearGuardTimer();
 
       if (isRecording) {
-        await stopRecording(false); // 不保存
+        await stopRecording(false);
       }
 
       if (stream) {
@@ -322,7 +340,6 @@
       log("音频已关闭");
     }
 
-    // ================= 停止录音（通用）=================
     async function stopRecording(save = true) {
       if (!isRecording) return;
 
@@ -337,7 +354,6 @@
       let filename = generateFilename();
       let mimeType = 'audio/mp4';
 
-      // 确定 MIME 类型
       if (!MediaRecorder.isTypeSupported('audio/mp4')) {
         if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
           mimeType = 'audio/webm;codecs=opus';
@@ -348,7 +364,6 @@
         }
       }
 
-      // 处理流式写入
       if (writer) {
         try {
           await writer.close();
@@ -364,7 +379,6 @@
         fileHandle = null;
       }
 
-      // 处理内存模式
       if (save && recordedChunks.length > 0 && !fileHandle) {
         const blob = new Blob(recordedChunks, { type: mimeType });
         const url = URL.createObjectURL(blob);
@@ -384,7 +398,6 @@
       recordBtn.classList.remove('active');
     }
 
-    // ================= 启动音频 =================
     startBtn.onclick = async () => {
       try {
         log("正在启动音频...");
@@ -452,7 +465,6 @@
       }
     };
 
-    // ================= 开始录音 =================
     recordBtn.onclick = async () => {
       if (isRecording) {
         await stopRecording(true);
@@ -583,22 +595,120 @@
       }
     };
 
+    // ======== 点击获取频率 ========
+    function handleCanvasClick(clientX, clientY) {
+      if (!analyser || !audioContext) return;
+
+      const containerRect = document.querySelector('.canvas-container').getBoundingClientRect();
+      const canvasRect = canvas.getBoundingClientRect();
+      const scrollLeft = document.querySelector('.canvas-container').scrollLeft;
+
+      // 计算相对于 canvas 逻辑坐标的 x
+      const x = clientX - canvasRect.left + scrollLeft;
+      const plotWidth = LOGICAL_CANVAS_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
+
+      if (x < MARGIN_LEFT || x > LOGICAL_CANVAS_WIDTH - MARGIN_RIGHT) return;
+
+      const normalizedX = (x - MARGIN_LEFT) / plotWidth;
+      const nyquist = audioContext.sampleRate / 2;
+      const freq = normalizedX * nyquist;
+
+      log(`🖱️ 当前频率: ${freq.toFixed(1)} Hz`);
+    }
+
+    canvas.addEventListener('click', (e) => handleCanvasClick(e.clientX, e.clientY));
+    canvas.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0 && e.changedTouches.length > 0) {
+        const touch = e.changedTouches[0];
+        handleCanvasClick(touch.clientX, touch.clientY);
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    // ======== 优化后的 drawFFT ========
     function drawFFT() {
       if (!analyser) return;
-      const bufferLength = analyser.frequencyBinCount;
+      const bufferLength = analyser.frequencyBinCount; // 512
       const dataArray = new Uint8Array(bufferLength);
+
+      const width = LOGICAL_CANVAS_WIDTH;
+      const height = CANVAS_HEIGHT;
+
+      ctx.clearRect(0, 0, width, height);
+
+      const plotWidth = width - MARGIN_LEFT - MARGIN_RIGHT;
+      const plotHeight = height - MARGIN_TOP - MARGIN_BOTTOM;
+
       analyser.getByteFrequencyData(dataArray);
 
-      ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-      const barWidth = (width / bufferLength) * 2.5;
-
+      // 绘制频谱柱状图
+      const barWidth = plotWidth / bufferLength;
       for (let i = 0; i < bufferLength; i++) {
-        const barHeight = (dataArray[i] / 255) * height;
+        const barHeight = (dataArray[i] / 255) * plotHeight;
         ctx.fillStyle = 'cyan';
-        ctx.fillRect(i * barWidth, height - barHeight, barWidth - 1, barHeight);
+        const x = MARGIN_LEFT + i * barWidth;
+        const y = MARGIN_TOP + (plotHeight - barHeight);
+        ctx.fillRect(x, y, barWidth - 1, barHeight);
       }
+
+      // ====== X 轴标签（底部）======
+      ctx.fillStyle = '#aaa';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+
+      const sampleRate = audioContext ? audioContext.sampleRate : 44100;
+      const nyquist = sampleRate / 2;
+
+      // 使用线性分布的合理刻度（覆盖 0～20k+）
+      const xLabels = [];
+      for (let f = 0; f <= 22000; f += 2000) {
+        xLabels.push({ freq: f, ratio: f / nyquist });
+      }
+      // 确保包含 Nyquist
+      if (nyquist > 22000) {
+        xLabels.push({ freq: Math.round(nyquist), ratio: 1 });
+      }
+
+      xLabels.forEach(label => {
+        const x = MARGIN_LEFT + label.ratio * plotWidth;
+        if (x >= MARGIN_LEFT && x <= width - MARGIN_RIGHT) {
+          ctx.fillText(`${Math.round(label.freq / 1000)}k`, x, height - MARGIN_BOTTOM + 10);
+          ctx.beginPath();
+          ctx.moveTo(x, height - MARGIN_BOTTOM);
+          ctx.lineTo(x, height - MARGIN_BOTTOM + 5);
+          ctx.strokeStyle = '#555';
+          ctx.stroke();
+        }
+      });
+      ctx.fillText('频率 (Hz)', width / 2, height - 10);
+
+      // ====== Y 轴标签（左侧）======
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      const yLabels = [
+        { value: 255, ratio: 0 },
+        { value: 192, ratio: 0.25 },
+        { value: 128, ratio: 0.5 },
+        { value: 64,  ratio: 0.75 },
+        { value: 0,   ratio: 1 }
+      ];
+      yLabels.forEach(label => {
+        const y = MARGIN_TOP + label.ratio * plotHeight;
+        ctx.fillText(label.value.toString(), MARGIN_LEFT - 10, y);
+        ctx.beginPath();
+        ctx.moveTo(MARGIN_LEFT - 5, y);
+        ctx.lineTo(MARGIN_LEFT + 5, y);
+        ctx.strokeStyle = '#555';
+        ctx.stroke();
+      });
+
+      ctx.save();
+      ctx.translate(15, height / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = 'center';
+      ctx.fillText('幅度', 0, 0);
+      ctx.restore();
 
       requestAnimationFrame(drawFFT);
     }
